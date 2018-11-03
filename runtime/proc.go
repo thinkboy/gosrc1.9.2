@@ -141,7 +141,7 @@ func main() {
 		throw("runtime.main not on m0")
 	}
 
-	// ??runtime??????init
+	// 执行runtime包初始化函数init
 	runtime_init() // must be before defer
 	if nanotime() == 0 {
 		throw("nanotime returning zero")
@@ -159,7 +159,7 @@ func main() {
 	// because nanotime on some platforms depends on startNano.
 	runtimeInitTime = nanotime()
 
-	// ?????????????
+	// 启动所有垃圾回收器后台操作
 	gcenable()
 
 	main_init_done = make(chan bool)
@@ -181,7 +181,7 @@ func main() {
 		cgocall(_cgo_notify_runtime_init_done, nil)
 	}
 
-	// ????????init??
+	// 执行所有程序里的init函数
 	fn := main_init // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
 	close(main_init_done)
@@ -239,14 +239,14 @@ func init() {
 
 func forcegchelper() {
 	forcegc.g = getg()
-	// ??GC???
+	// 强制GC死循环
 	for {
 		lock(&forcegc.lock)
 		if forcegc.idle != 0 {
 			throw("forcegc: phase error")
 		}
 		atomic.Store(&forcegc.idle, 1)
-		//??g0???lock,????g0??????????
+		//调到g0并解锁lock,由于调到g0，因此将不会继续执行
 		goparkunlock(&forcegc.lock, "force gc (idle)", traceEvGoBlock, 1)
 		// this goroutine is explicitly resumed by sysmon
 		if debug.gctrace > 0 {
@@ -289,7 +289,7 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason s
 	mp.waittraceskip = traceskip
 	releasem(mp)
 	// can't do anything that might move the G between Ms here.
-	// ???g0?????G?_Gwaiting??,??????G,????????G
+	// 切换到g0状态，更改当前G状态为_Gwaiting状态,然后挂起当前G,再继续执行其余的G
 	mcall(park_m)
 }
 
@@ -468,9 +468,9 @@ const (
 //	call osinit
 //	call schedinit
 //	make & queue new G
-//	call runtime讽start
+//	call runtime·mstart
 //
-// The new G calls runtime讽ain.
+// The new G calls runtime·main.
 func schedinit() {
 	// raceinit must be the first call to race detector.
 	// In particular, it must be done before mallocinit below calls racemapshadow.
@@ -479,14 +479,14 @@ func schedinit() {
 		_g_.racectx, raceprocctx0 = raceinit()
 	}
 
-	// ????M??
+	// 设置最大M数量
 	sched.maxmcount = 10000
 
 	tracebackinit()
 	moduledataverify()
 	stackinit()
 	mallocinit()
-	// ?????M
+	// 初始化当前M
 	mcommoninit(_g_.m)
 	alginit()       // maps must not be used before this call
 	modulesinit()   // provides activeModules
@@ -502,8 +502,8 @@ func schedinit() {
 	gcinit()
 
 	sched.lastpoll = uint64(nanotime())
-	// ???????P??????cpu core?.
-	// ?????????GOMAXPROCS????????,??????_MaxGomaxprocs(1024)?
+	// 查看应该启动的P数量，默认为cpu core数.
+	// 如果设置了环境变量GOMAXPROCS则以环境变量为准,最大不得超过_MaxGomaxprocs(1024)个
 	procs := ncpu
 	if n, ok := atoi32(gogetenv("GOMAXPROCS")); ok && n > 0 {
 		procs = n
@@ -511,14 +511,14 @@ func schedinit() {
 	if procs > _MaxGomaxprocs {
 		procs = _MaxGomaxprocs
 	}
-	// ??P????????????????P?????
+	// 调整P数量，此时由于是初始化阶段，所以P都是新建的
 	if procresize(procs) != nil {
 		throw("unknown runnable goroutine during bootstrap")
 	}
 
 	if buildVersion == "" {
 		// Condition should never trigger. This code just serves
-		// to ensure runtime封uildVersion is kept in the resulting binary.
+		// to ensure runtime·buildVersion is kept in the resulting binary.
 		buildVersion = "unknown"
 	}
 }
@@ -1166,9 +1166,9 @@ func mstart() {
 func mstart1() {
 	_g_ := getg()
 
-	// ????M???????g0
+	// 刚启动的M，里面一定只有g0
 	if _g_ != _g_.m.g0 {
-		throw("bad runtime讽start")
+		throw("bad runtime·mstart")
 	}
 
 	// Record top of stack for use by mcall.
@@ -1190,7 +1190,7 @@ func mstart1() {
 		initsig(false)
 	}
 
-	// ??????
+	// 执行启动函数
 	if fn := _g_.m.mstartfn; fn != nil {
 		fn()
 	}
@@ -1199,11 +1199,11 @@ func mstart1() {
 		_g_.m.helpgc = 0
 		stopm()
 	} else if _g_.m != &m0 {
-		// ??P,?m.nextp???m.p
+		// 绑定P,从m.nextp转移到m.p
 		acquirep(_g_.m.nextp.ptr())
 		_g_.m.nextp = 0
 	}
-	// ??????(?????)
+	// 进入调度循环(阻塞不返回)
 	schedule()
 }
 
@@ -1355,10 +1355,10 @@ func allocm(_p_ *p, fn func()) *m {
 		acquirep(_p_) // temporarily borrow p for mallocs in this function
 	}
 	mp := new(m)
-	mp.mstartfn = fn // ??????
-	mcommoninit(mp)  // ???m
+	mp.mstartfn = fn // 设置启动函数
+	mcommoninit(mp)  // 初始化m
 
-	// ??g0
+	// 创建g0
 	// In case of cgo or Solaris, pthread_create will make us a stack.
 	// Windows and Plan 9 will layout sched stack on OS stack.
 	if iscgo || GOOS == "solaris" || GOOS == "windows" || GOOS == "plan9" {
@@ -1366,7 +1366,7 @@ func allocm(_p_ *p, fn func()) *m {
 	} else {
 		mp.g0 = malg(8192 * sys.StackGuardMultiplier)
 	}
-	// ??g0?????m?????m
+	// 标记g0正在关联的m为当前新建m
 	mp.g0.m = mp
 
 	if _p_ == _g_.m.p.ptr() {
@@ -1651,9 +1651,9 @@ var execLock rwmutex
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrierrec
 func newm(fn func(), _p_ *p) {
-	// ????m??
+	// 创建一个m对象
 	mp := allocm(_p_, fn)
-	// ??p
+	// 暂存p
 	mp.nextp.set(_p_)
 	mp.sigmask = initSigmask
 	if iscgo {
@@ -1673,15 +1673,15 @@ func newm(fn func(), _p_ *p) {
 		return
 	}
 	execLock.rlock() // Prevent process clone.
-	// ??????
+	// 创建系统线程
 	newosproc(mp, unsafe.Pointer(mp.g0.stack.hi))
 	execLock.runlock()
 }
 
 // Stops execution of the current m until new work is available.
 // Returns with acquired P.
-// ??M
-// ????????????????????
+// 休眠M
+// 在这里会阻塞住进入休眠状态，直到有人唤醒
 func stopm() {
 	_g_ := getg()
 
@@ -1697,11 +1697,11 @@ func stopm() {
 
 retry:
 	lock(&sched.lock)
-	// ?m?????m????
+	// 把m放置到空闲m列表尾部
 	mput(_g_.m)
 	unlock(&sched.lock)
-	// stopm??????????(notesleep?????linux????????futex())
-	// ???????P????stopm????
+	// stopm其实就是在这里阻塞住(notesleep的实现是在linux下会调用系统函数futex())
+	// 这里并没有解绑P，而是在stopm之前解绑
 	notesleep(&_g_.m.park)
 	noteclear(&_g_.m.park)
 	if _g_.m.helpgc != 0 {
@@ -1726,13 +1726,13 @@ func mspinning() {
 // If spinning is set, the caller has incremented nmspinning and startm will
 // either decrement nmspinning or set m.spinning in the newly started M.
 //go:nowritebarrierrec
-// ????M???P
+// 调度一些M来运行P
 func startm(_p_ *p, spinning bool) {
 	lock(&sched.lock)
 	if _p_ == nil {
-		// ???P?????
+		// 从空闲P里获取一个
 		_p_ = pidleget()
-		// ???????
+		// 获取失败则终止
 		if _p_ == nil {
 			unlock(&sched.lock)
 			if spinning {
@@ -1745,10 +1745,10 @@ func startm(_p_ *p, spinning bool) {
 			return
 		}
 	}
-	// ???????m
+	// 获取一个空闲的m
 	mp := mget()
 	unlock(&sched.lock)
-	// ??????M??new??
+	// 如果没有空闲M，则new一个
 	if mp == nil {
 		var fn func()
 		if spinning {
@@ -1768,16 +1768,16 @@ func startm(_p_ *p, spinning bool) {
 		throw("startm: p has runnable gs")
 	}
 	// The caller incremented nmspinning, so set m.spinning in the new M.
-	// ?????????P
+	// 设置自璇状态，暂存P
 	mp.spinning = spinning
 	mp.nextp.set(_p_)
-	// ??M
+	// 唤醒M
 	notewakeup(&mp.park)
 }
 
 // Hands off P from syscall or locked M.
 // Always runs without a P, so write barriers are not allowed.
-// ??????M???P????????????
+// 尝试切换一个M去执行P，如果没有则放回空闲队列
 //go:nowritebarrierrec
 func handoffp(_p_ *p) {
 	// handoffp must start an M in any situation where
@@ -1828,7 +1828,7 @@ func handoffp(_p_ *p) {
 		startm(_p_, false)
 		return
 	}
-	// ?????P??
+	// 放回到空闲P队列
 	pidleput(_p_)
 	unlock(&sched.lock)
 }
@@ -1841,7 +1841,7 @@ func wakep() {
 		return
 	}
 
-	// ????m??p?????????nil??????p??
+	// 开启一个m执行p，由于第一个参数为nil，则从空闲的p里取
 	startm(nil, true)
 }
 
@@ -1928,8 +1928,8 @@ func gcstopm() {
 // Write barriers are allowed because this is called immediately after
 // acquiring a P in several places.
 //
-// ??G
-// ??????G????????????????????.??????
+// 执行G
+// 注：运行中的G已经脱离了所有的运行队列、待运行队列等等.属于独立状态
 //go:yeswritebarrierrec
 func execute(gp *g, inheritTime bool) {
 	_g_ := getg()
@@ -1941,9 +1941,9 @@ func execute(gp *g, inheritTime bool) {
 	if !inheritTime {
 		_g_.m.p.ptr().schedtick++
 	}
-	// ?M?????????G
+	// 让M记录当前正在执行的G
 	_g_.m.curg = gp
-	// ?G???????M
+	// 让G记录当前关联的M
 	gp.m = _g_.m
 
 	// Check whether the profiler needs to be turned on or off.
@@ -1961,18 +1961,18 @@ func execute(gp *g, inheritTime bool) {
 		traceGoStart()
 	}
 
-	// ?????g,????
+	// 真正的执行g,汇编实现
 	gogo(&gp.sched)
 }
 
 // Finds a runnable goroutine to execute.
 // Tries to steal from other P's, get g from global queue, poll network.
-// ????????G
-// 1.????
-// 2.??????
-// 3.?epoll??
-// 4.???P??
-// 5.????stopm?stopm?????????
+// 找到一个可运行的G
+// 1.从本地取
+// 2.全局队列里取
+// 3.从epoll里取
+// 4.从其它P里取
+// 5.都没有就stopm，stopm会阻塞住，等待唤醒
 func findrunnable() (gp *g, inheritTime bool) {
 	_g_ := getg()
 
@@ -1998,12 +1998,12 @@ top:
 		asmcgocall(*cgo_yield, nil)
 	}
 
-	// ???????
+	// 从本地队列获取
 	if gp, inheritTime := runqget(_p_); gp != nil {
 		return gp, inheritTime
 	}
 
-	// ??????
+	// 全局队列获取
 	if sched.runqsize != 0 {
 		lock(&sched.lock)
 		gp := globrunqget(_p_, 0)
@@ -2019,7 +2019,7 @@ top:
 	// If there is any kind of logical race with that blocked thread
 	// (e.g. it has already returned from netpoll, but does not set lastpoll yet),
 	// this thread will do blocking netpoll below anyway.
-	// ?epoll??
+	// 从epoll里去
 	if netpollinited() && sched.lastpoll != 0 {
 		if gp := netpoll(false); gp != nil { // non-blocking
 			// netpoll returns list of goroutines linked by schedlink.
@@ -2033,7 +2033,7 @@ top:
 	}
 
 	// Steal work from other P's.
-	// ????P??????
+	// 从其它的P里面偷取一些
 	procs := uint32(gomaxprocs)
 	if atomic.Load(&sched.npidle) == procs-1 {
 		// Either GOMAXPROCS=1 or everybody, except for us, is idle already.
@@ -2051,14 +2051,14 @@ top:
 		_g_.m.spinning = true
 		atomic.Xadd(&sched.nmspinning, 1)
 	}
-	// ??4????P?
+	// 尝试4次从别的P偷
 	for i := 0; i < 4; i++ {
 		for enum := stealOrder.start(fastrand()); !enum.done(); enum.next() {
 			if sched.gcwaiting != 0 {
 				goto top
 			}
 			stealRunNextG := i > 2 // first look for ready queues with more than 1 g
-			// ???????P??????
+			// 在这里开始针对P进行偷取操作
 			if gp := runqsteal(_p_, allp[enum.position()], stealRunNextG); gp != nil {
 				return gp, false
 			}
@@ -2086,7 +2086,7 @@ stop:
 		unlock(&sched.lock)
 		goto top
 	}
-	// ???????????
+	// 再次尝试从全局队列获取
 	if sched.runqsize != 0 {
 		gp := globrunqget(_p_, 0)
 		unlock(&sched.lock)
@@ -2095,7 +2095,7 @@ stop:
 	if releasep() != _p_ {
 		throw("findrunnable: wrong p")
 	}
-	// ????????????G??????P
+	// 到现在还没获取到可执行的G的话，则释放P
 	pidleput(_p_)
 	unlock(&sched.lock)
 
@@ -2120,7 +2120,7 @@ stop:
 		}
 	}
 
-	// ??????P??
+	// 再次检查所有P队列
 	for i := 0; i < int(gomaxprocs); i++ {
 		_p_ := allp[i]
 		if _p_ != nil && !runqempty(_p_) {
@@ -2159,7 +2159,7 @@ stop:
 		}
 	}
 
-	// ????netpoll
+	// 再次检查netpoll
 	if netpollinited() && atomic.Load(&netpollWaiters) > 0 && atomic.Xchg64(&sched.lastpoll, 0) != 0 {
 		if _g_.m.p != 0 {
 			throw("findrunnable: netpoll with p")
@@ -2185,8 +2185,8 @@ stop:
 			injectglist(gp)
 		}
 	}
-	// ?????????G,???M,?????????
-	// ??????????P
+	// 还有没有找到可执行G,则休眠M,休眠在这里会阻塞住
+	// 在休眠之前已经释放了P
 	stopm()
 	goto top
 }
@@ -2232,7 +2232,7 @@ func resetspinning() {
 
 // Injects the list of runnable G's into the scheduler.
 // Can run concurrently with GC.
-// ?G???????runq?
+// 把G列表注入到全局runq里
 func injectglist(glist *g) {
 	if glist == nil {
 		return
@@ -2251,7 +2251,7 @@ func injectglist(glist *g) {
 		globrunqput(gp)
 	}
 	unlock(&sched.lock)
-	// ??M???
+	// 唤醒M去执行
 	for ; n != 0 && sched.npidle != 0; n-- {
 		startm(nil, false)
 	}
@@ -2259,8 +2259,8 @@ func injectglist(glist *g) {
 
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
-// ????????goroutine????
-// ????returns
+// 找到一个可运行的goroutine并执行它
+// 永远不会returns
 func schedule() {
 	_g_ := getg()
 
@@ -2274,7 +2274,7 @@ func schedule() {
 	}
 
 top:
-	// ????gc????
+	// 如果正在gc，则休眠
 	if sched.gcwaiting != 0 {
 		gcstopm()
 		goto top
@@ -2292,30 +2292,30 @@ top:
 			traceGoUnpark(gp, 0)
 		}
 	}
-	// ??gc MarkWorker ????
+	// 进入gc MarkWorker 工作模式
 	if gp == nil && gcBlackenEnabled != 0 {
-		// TODO ??????????????????global??runq?findRunnableGCWorker?????
+		// TODO 为什么这里找不到的时候会触发下面的从global里找runq?findRunnableGCWorker是干嘛用的
 		gp = gcController.findRunnableGCWorker(_g_.m.p.ptr())
 	}
 	if gp == nil {
 		// Check the global runnable queue once in a while to ensure fairness.
 		// Otherwise two goroutines can completely occupy the local runqueue
 		// by constantly respawning each other.
-		// ???n???????????G??,???? TODO ???????????????n???
+		// 每处理n个任务就去全局队列获取G任务,确保公平 TODO 与上面的问题一样，怎么体现出来n个的?
 		if _g_.m.p.ptr().schedtick%61 == 0 && sched.runqsize > 0 {
 			lock(&sched.lock)
 			gp = globrunqget(_g_.m.p.ptr(), 1)
 			unlock(&sched.lock)
 		}
 	}
-	// ???P????
+	// 从本地P队列里取
 	if gp == nil {
 		gp, inheritTime = runqget(_g_.m.p.ptr())
 		if gp != nil && _g_.m.spinning {
 			throw("schedule: spinning with local work")
 		}
 	}
-	// ???????G,?????????M????????
+	// 从其它地方获取G,如果获取不到则沉睡M，并且阻塞在这里
 	if gp == nil {
 		gp, inheritTime = findrunnable() // blocks until work is available
 	}
@@ -2333,7 +2333,7 @@ top:
 		startlockedm(gp)
 		goto top
 	}
-	// ??g
+	// 执行g
 	execute(gp, inheritTime)
 }
 
@@ -2357,9 +2357,8 @@ func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
 }
 
 // park continuation on g0.
-// netpoll????
-// g0?????????gp?_Gwaiting??,??????G,????????G
-// ??G??wait??????_Grunnable???????
+// g0状态下先把传过来的G切换为_Gwaiting状态挂起该G
+// 调用回调函数waitunlockf()由外层决定是否等待解锁，返回true则等待解锁不在执行G，返回false则不等待解锁继续执行
 func park_m(gp *g) {
 	_g_ := getg()
 
@@ -2375,7 +2374,7 @@ func park_m(gp *g) {
 		ok := fn(gp, _g_.m.waitlock)
 		_g_.m.waitunlockf = nil
 		_g_.m.waitlock = nil
-		if !ok { // ????wait??????_Grunnable???????G
+		if !ok { // 如果不需要等待解锁，则切换到_Grunnable状态并直接执行G
 			if trace.enabled {
 				traceGoUnpark(gp, 2)
 			}
@@ -2430,8 +2429,8 @@ func gopreempt_m(gp *g) {
 }
 
 // Finishes execution of the current goroutine.
-// ?????????
-// ???G????????????G
+// 汇编代码里实现调用
+// 执行完G里面的方法后回到这里释放G
 func goexit1() {
 	if raceenabled {
 		racegoend()
@@ -2439,7 +2438,7 @@ func goexit1() {
 	if trace.enabled {
 		traceGoEnd()
 	}
-	// ???g0???G
+	// 切换到g0来释放G
 	mcall(goexit0)
 }
 
@@ -2537,7 +2536,7 @@ func save(pc, sp uintptr) {
 // Note that the increment is done even if tracing is not enabled,
 // because tracing can be enabled in the middle of syscall. We don't want the wait to hang.
 //
-// ??????
+// 进入系统调用
 //go:nosplit
 func reentersyscall(pc, sp uintptr) {
 	_g_ := getg()
@@ -2554,11 +2553,11 @@ func reentersyscall(pc, sp uintptr) {
 	_g_.throwsplit = true
 
 	// Leave SP around for GC and traceback.
-	// ??????
+	// 保存执行现场
 	save(pc, sp)
 	_g_.syscallsp = sp
 	_g_.syscallpc = pc
-	// ?????????
+	// 切换到系统调用状态
 	casgstatus(_g_, _Grunning, _Gsyscall)
 	if _g_.syscallsp < _g_.stack.lo || _g_.stack.hi < _g_.syscallsp {
 		systemstack(func() {
@@ -2604,7 +2603,7 @@ func reentersyscall(pc, sp uintptr) {
 }
 
 // Standard syscall entry used by the go syscall library and normal cgo calls.
-// ??????
+// 进入系统调用
 //go:nosplit
 func entersyscall(dummy int32) {
 	reentersyscall(getcallerpc(unsafe.Pointer(&dummy)), getcallersp(unsafe.Pointer(&dummy)))
@@ -2638,7 +2637,7 @@ func entersyscall_gcwait() {
 }
 
 // The same as entersyscall(), but with a hint that the syscall is blocking.
-// ???entersyscall()????????????????,???
+// 类似于entersyscall()方法，但是是一个会阻塞的系统调用,比如锁
 //go:nosplit
 func entersyscallblock(dummy int32) {
 	_g_ := getg()
@@ -2686,7 +2685,7 @@ func entersyscallblock_handoff() {
 		traceGoSysCall()
 		traceGoSysBlock(getg().m.p.ptr())
 	}
-	// ??P????????G
+	// 释放P，让他执行其它的G
 	handoffp(releasep())
 }
 
@@ -2697,7 +2696,7 @@ func entersyscallblock_handoff() {
 //
 // Write barriers are not allowed because our P may have been stolen.
 //
-// ?????????
+// 系统调用返回时执行
 //go:nosplit
 //go:nowritebarrierrec
 func exitsyscall(dummy int32) {
@@ -2715,7 +2714,7 @@ func exitsyscall(dummy int32) {
 
 	_g_.waitsince = 0
 	oldp := _g_.m.p.ptr()
-	// exitsyscallfast()???????????P???
+	// exitsyscallfast()会从原本或者找一个空闲P来绑定
 	if exitsyscallfast() {
 		if _g_.m.mcache == nil {
 			throw("lost mcache")
@@ -2791,7 +2790,7 @@ func exitsyscallfast() bool {
 	}
 
 	// Try to re-acquire the last P.
-	// ???????P
+	// 尝试绑定原本的P
 	if _g_.m.p != 0 && _g_.m.p.ptr().status == _Psyscall && atomic.Cas(&_g_.m.p.ptr().status, _Psyscall, _Prunning) {
 		// There's a cpu for us, so we can run.
 		exitsyscallfast_reacquired()
@@ -2799,7 +2798,7 @@ func exitsyscallfast() bool {
 	}
 
 	// Try to get any other idle P.
-	// ???????P
+	// 尝试找一个空闲P
 	oldp := _g_.m.p.ptr()
 	_g_.m.mcache = nil
 	_g_.m.p = 0
@@ -2872,8 +2871,8 @@ func exitsyscallfast_pidle() bool {
 // exitsyscall slow path on g0.
 // Failed to acquire P, enqueue gp as runnable.
 //
-// ??????????????????P??????
-// ???_Grunnable????????
+// 系统调用返回的时候，如果没找到可用的P则会调用这里
+// 设置为_Grunnable放到待运行队列里
 //go:nowritebarrierrec
 func exitsyscall0(gp *g) {
 	_g_ := getg()
@@ -2881,7 +2880,7 @@ func exitsyscall0(gp *g) {
 	casgstatus(gp, _Gsyscall, _Grunnable)
 	dropg()
 	lock(&sched.lock)
-	// ???????P????????????????????
+	// 获取一个空闲的P，如果没有则放到全局队列里，如果有则执行
 	_p_ := pidleget()
 	if _p_ == nil {
 		globrunqput(gp)
@@ -3042,13 +3041,13 @@ func newproc1(fn *funcval, argp *uint8, narg int32, nret int32, callerpc uintptr
 	}
 
 	_p_ := _g_.m.p.ptr()
-	// ???P????????G
+	// 从当前P里面复用一个空闲G
 	newg := gfget(_p_)
-	// ??????G?????,??????_StackMin=2048 bytes
+	// 如果没有空闲G则新建一个,默认堆大小为_StackMin=2048 bytes
 	if newg == nil {
 		newg = malg(_StackMin)
 		casgstatus(newg, _Gidle, _Gdead)
-		// ?????G?????allg?
+		// 把新创建的G添加到全局allg里
 		allgadd(newg) // publishes with a g->status of Gdead so GC scanner doesn't look at uninitialized stack.
 	}
 	if newg.stack.hi == 0 {
@@ -3119,12 +3118,12 @@ func newproc1(fn *funcval, argp *uint8, narg int32, nret int32, callerpc uintptr
 	if trace.enabled {
 		traceGoCreate(newg, newg.startpc)
 	}
-	// ?G??P???????????????true??????runnext??????????G
+	// 把G放到P里的待运行队列，第三参数设置为true，表示要放到runnext里，作为优先要执行的G
 	runqput(_p_, newg, true)
 
-	// ???????P???????M???
-	// ???M??????P?G??????
-	// NOTE: sched.nmspinning!=0?????M????????sched.nmspinnin==0????wakep?????????M
+	// 如果有其它空闲P则尝试唤醒某个M来执行
+	// 如果有M处于自璇等待P或G状态，放弃。
+	// NOTE: sched.nmspinning!=0说明正在有M被唤醒，这里判断sched.nmspinnin==0时才进入wakep是防止同时唤醒多个M
 	if atomic.Load(&sched.npidle) != 0 && atomic.Load(&sched.nmspinning) == 0 && mainStarted {
 		wakep()
 	}
@@ -3137,7 +3136,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, nret int32, callerpc uintptr
 
 // Put on gfree list.
 // If local list is too long, transfer a batch to the global list.
-// ?G??P?gfree?
+// 把G放到P的gfree里
 func gfput(_p_ *p, gp *g) {
 	if readgstatus(gp) != _Gdead {
 		throw("gfput: bad status (not Gdead)")
@@ -3152,7 +3151,7 @@ func gfput(_p_ *p, gp *g) {
 		gp.stack.hi = 0
 		gp.stackguard0 = 0
 	}
-	// ?g??p?gfree????
+	// 把g放到p的gfree链表头部
 	gp.schedlink.set(_p_.gfree)
 	_p_.gfree = gp
 	_p_.gfreecnt++
@@ -3177,15 +3176,15 @@ func gfput(_p_ *p, gp *g) {
 
 // Get from gfree list.
 // If local list is empty, grab a batch from global list.
-// ?gfree??????G?
-// ?????????????list???32???
+// 从gfree列表获取一个G。
+// 如果本地列表是空，就从全局list里获取32个过来
 func gfget(_p_ *p) *g {
 retry:
-	// ?P?gfree?????G
+	// 从P的gfree链表头部取G
 	gp := _p_.gfree
 	if gp == nil && (sched.gfreeStack != nil || sched.gfreeNoStack != nil) {
 		lock(&sched.gflock)
-		// ???list???32???
+		// 从全局list里获取32个过来
 		for _p_.gfreecnt < 32 {
 			if sched.gfreeStack != nil {
 				// Prefer Gs with stacks.
@@ -3227,7 +3226,7 @@ retry:
 }
 
 // Purge all cached G's from gfree list to the global list.
-// ??P?????G??????gfree?
+// 释放P里面所有的G，转移到全局gfree里
 func gfpurge(_p_ *p) {
 	lock(&sched.gflock)
 	for _p_.gfreecnt != 0 {
@@ -3271,8 +3270,8 @@ func LockOSThread() {
 	dolockOSThread()
 }
 
-// ???G????????M???????????????
-// ???cgocall???????
+// 将当前G锁定到当前执行的M上，也就是锁定到当前的线程上。
+// 当执行cgocall的时候才会执行
 //go:nosplit
 func lockOSThread() {
 	getg().m.locked += _LockInternal
@@ -3629,11 +3628,11 @@ func procresize(nprocs int32) *p {
 	}
 	sched.procresizetime = now
 
-	// ?????P
+	// 初始化新的P
 	for i := int32(0); i < nprocs; i++ {
 		pp := allp[i]
 		if pp == nil {
-			// ????P
+			// 申请新的P
 			pp = new(p)
 			pp.id = i
 			pp.status = _Pgcstop
@@ -3641,7 +3640,7 @@ func procresize(nprocs int32) *p {
 			for i := range pp.deferpool {
 				pp.deferpool[i] = pp.deferpoolbuf[i][:0]
 			}
-			// ?P????allp?
+			// 将P放到全局allp里
 			atomicstorep(unsafe.Pointer(&allp[i]), unsafe.Pointer(pp))
 		}
 		if pp.mcache == nil {
@@ -3664,7 +3663,7 @@ func procresize(nprocs int32) *p {
 		}
 	}
 
-	// ?????P
+	// 释放不用的P
 	for i := nprocs; i < old; i++ {
 		p := allp[i]
 		if trace.enabled {
@@ -3676,7 +3675,7 @@ func procresize(nprocs int32) *p {
 			}
 		}
 		// move all runnable goroutines to the global queue
-		// ?????G?????????
+		// 把本地运行G转移到全局队列头部
 		for p.runqhead != p.runqtail {
 			// pop from tail of local queue
 			p.runqtail--
@@ -3684,7 +3683,7 @@ func procresize(nprocs int32) *p {
 			// push onto head of global queue
 			globrunqputhead(gp)
 		}
-		// ?runnext????G?????????
+		// 把runnext里运行的G也放到全局队列头部
 		if p.runnext != 0 {
 			globrunqputhead(p.runnext.ptr())
 			p.runnext = 0
@@ -3713,7 +3712,7 @@ func procresize(nprocs int32) *p {
 		}
 		freemcache(p.mcache)
 		p.mcache = nil
-		// ??gfree??
+		// 释放gfree列表
 		gfpurge(p)
 		traceProcFree(p)
 		if raceenabled {
@@ -3743,7 +3742,7 @@ func procresize(nprocs int32) *p {
 			traceGoStart()
 		}
 	}
-	// ???????P????pidle???????????runnablePs?return??
+	// 把无本地任务的P放到全局pidle里，把有本地任务的放到runnablePs里return回去
 	var runnablePs *p
 	for i := nprocs - 1; i >= 0; i-- {
 		p := allp[i]
@@ -3887,7 +3886,7 @@ func checkdead() {
 		}
 	}
 	unlock(&allglock)
-	if grunning == 0 { // possible if main goroutine calls runtime非oexit()
+	if grunning == 0 { // possible if main goroutine calls runtime·Goexit()
 		throw("no goroutines (main called runtime.Goexit) - deadlock!")
 	}
 
@@ -3924,10 +3923,10 @@ var forcegcperiod int64 = 2 * 60 * 1e9
 
 // Always runs without a P, so write barriers are not allowed.
 //
-// ???????????????????????
-// 1. ??epoll?????????
-// 2. ???????????
-// 3. ??GC
+// 监控程序，进程启动时就起来了。主要做如下事情：
+// 1. 检查epoll是否有可运行的任务
+// 2. 抢占运行时间过长的任务
+// 3. 强制GC
 //go:nowritebarrierrec
 func sysmon() {
 	// If a heap span goes unused for 5 minutes after a garbage collection,
@@ -3956,7 +3955,7 @@ func sysmon() {
 			delay = 10 * 1000
 		}
 		usleep(delay)
-		// GC???????STW????????
+		// GC的时候，也就是STW的时候，进行休眠
 		if debug.schedtrace <= 0 && (sched.gcwaiting != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs)) {
 			lock(&sched.lock)
 			if atomic.Load(&sched.gcwaiting) != 0 || atomic.Load(&sched.npidle) == uint32(gomaxprocs) {
@@ -3983,13 +3982,13 @@ func sysmon() {
 				if shouldRelax {
 					osRelax(true)
 				}
-				// ????,????maxsleep
+				// 开始休眠,最大休眠maxsleep
 				notetsleep(&sched.sysmonnote, maxsleep)
 				if shouldRelax {
 					osRelax(false)
 				}
 				lock(&sched.lock)
-				// ???????
+				// 唤醒后重置状态
 				atomic.Store(&sched.sysmonwait, 0)
 				noteclear(&sched.sysmonnote)
 				idle = 0
@@ -4002,9 +4001,9 @@ func sysmon() {
 			asmcgocall(*cgo_yield, nil)
 		}
 		// poll network if not polled for more than 10ms
-		// ????10ms?netpoll??
-		// ???????????10ms???epoll????????????????????????10ms???
-		// ???????,?????G?????,findrunnable()???netpoll()??????
+		// 获取超过10ms的netpoll结果
+		// 这里想到一个问题，超过10ms才会从epoll里获取可运行的任务，会不会造成所有网络通讯都延迟10ms以上？
+		// 答案是当然不会,不要忘了在G调度的时候,findrunnable()会执行netpoll()方法获取任务
 		lastpoll := int64(atomic.Load64(&sched.lastpoll))
 		now := nanotime()
 		if lastpoll != 0 && lastpoll+10*1000*1000 < now {
@@ -4019,7 +4018,7 @@ func sysmon() {
 				// observes that there is no work to do and no other running M's
 				// and reports deadlock.
 				incidlelocked(-1)
-				// ?epoll ready?G???????runq?
+				// 把epoll ready的G列表注入到全局runq里
 				injectglist(gp)
 				incidlelocked(1)
 			}
@@ -4063,17 +4062,17 @@ type sysmontick struct {
 // preempted.
 const forcePreemptNS = 10 * 1000 * 1000 // 10ms
 
-// ????,?????P
+// 抢占任务,检测所有的P
 func retake(now int64) uint32 {
 	n := 0
 	for i := int32(0); i < gomaxprocs; i++ {
-		_p_ := allp[i] // ???P????
+		_p_ := allp[i] // 从所有P里面去找
 		if _p_ == nil {
 			continue
 		}
 		pd := &_p_.sysmontick
 		s := _p_.status
-		if s == _Psyscall { // ??????????
+		if s == _Psyscall { // 如果是正在系统调用中
 			// Retake P from syscall if it's there for more than 1 sysmon tick (at least 20us).
 			t := int64(_p_.syscalltick)
 			if int64(pd.syscalltick) != t {
@@ -4092,7 +4091,7 @@ func retake(now int64) uint32 {
 			// Otherwise the M from which we retake can exit the syscall,
 			// increment nmidle and report deadlock.
 			incidlelocked(-1)
-			// ???????P????_Pidle,handoffp()?????M??
+			// 正在系统调用的P强制设为_Pidle,handoffp()尝试找一个M绑定
 			if atomic.Cas(&_p_.status, s, _Pidle) {
 				if trace.enabled {
 					traceGoSysBlock(_p_)
@@ -4100,11 +4099,11 @@ func retake(now int64) uint32 {
 				}
 				n++
 				_p_.syscalltick++
-				// ?????M???????????M?????????
+				// 尝试找一个M绑定，如果没有可运行的M，则放到空闲列表里
 				handoffp(_p_)
 			}
 			incidlelocked(1)
-		} else if s == _Prunning { // ???????P
+		} else if s == _Prunning { // 针对正在运行的P
 			// Preempt G if it's running for too long.
 			t := int64(_p_.schedtick)
 			if int64(pd.schedtick) != t {
@@ -4112,11 +4111,11 @@ func retake(now int64) uint32 {
 				pd.schedwhen = now
 				continue
 			}
-			// ??????10ms????
+			// 如果已经超过10ms，则抢占
 			if pd.schedwhen+forcePreemptNS > now {
 				continue
 			}
-			// ??P
+			// 抢占P
 			preemptone(_p_)
 		}
 	}
@@ -4157,12 +4156,12 @@ func preemptone(_p_ *p) bool {
 	if mp == nil || mp == getg().m {
 		return false
 	}
-	// ?????????G
+	// 找到当前正在运行的G
 	gp := mp.curg
 	if gp == nil || gp == mp.g0 {
 		return false
 	}
-	// ??????
+	// 标记抢占状态
 	gp.preempt = true
 
 	// Every call in a go routine checks for stack overflow by
@@ -4312,8 +4311,8 @@ func globrunqputhead(gp *g) {
 	sched.runqsize++
 }
 
-// ??ghead->gtail???????runq???
-// ???????Sched????
+// 将以ghead->gtail的链表放到全局runq的尾部
+// 注：执行此操作Sched必须加锁
 func globrunqputbatch(ghead *g, gtail *g, n int32) {
 	gtail.schedlink = 0
 	if sched.runqtail != 0 {
@@ -4327,8 +4326,8 @@ func globrunqputbatch(ghead *g, gtail *g, n int32) {
 
 // Try get a batch of G's from the global runnable queue.
 // Sched must be locked.
-// ?????runq???G
-// ?"sched.runqsize/gomaxprocs + 1"?"max"?"len(_p_.runq))/2"???????????
+// 尝试从全局runq中获取G
+// 在"sched.runqsize/gomaxprocs + 1"、"max"、"len(_p_.runq))/2"三个条件中取最小的数量
 func globrunqget(_p_ *p, max int32) *g {
 	if sched.runqsize == 0 {
 		return nil
@@ -4420,16 +4419,16 @@ const randomizeScheduler = raceenabled
 // If next is true, runqput puts g in the _p_.runnext slot.
 // If the run queue is full, runnext puts g on the global queue.
 // Executed only by the owner P.
-// ?G??P?????
-// ??next?true????P?runnext?
-// ??next?false?????P?runq??
-// ??runq?????????????
+// 把G放到P本地队列里
+// 如果next为true，则放到P的runnext里
+// 如果next为false，直接放到P的runq尾部
+// 如果runq队列满了，则放到全局队列里
 func runqput(_p_ *p, gp *g, next bool) {
 	if randomizeScheduler && next && fastrand()%2 == 0 {
 		next = false
 	}
 
-	// ???G???P?runnext???????runnext????G??????????g??????runq?
+	// 尝试把G添加到P的runnext节点，这里确保runnext只有一个G，如果之前已经有一个g则踢出来放到runq里
 	if next {
 	retryNext:
 		oldnext := _p_.runnext
@@ -4439,12 +4438,12 @@ func runqput(_p_ *p, gp *g, next bool) {
 		if oldnext == 0 {
 			return
 		}
-		// ???g?????????runq?
+		// 把老的g踢出来，在下面放到runq里
 		gp = oldnext.ptr()
 	}
 
 retry:
-	//??_p_.runq??????????
+	//如果_p_.runq队列不满，则放到队尾
 	h := atomic.Load(&_p_.runqhead) // load-acquire, synchronize with consumers
 	t := _p_.runqtail
 	if t-h < uint32(len(_p_.runq)) {
@@ -4452,8 +4451,8 @@ retry:
 		atomic.Store(&_p_.runqtail, t+1) // store-release, makes the item available for consumption
 		return
 	}
-	//?????g???p?????runq??????
-	//??????,??slow
+	//最后尝试把g和当前p里的一部分runq放到全局队列
+	//因为需要加锁,所以slow
 	if runqputslow(_p_, gp, h, t) {
 		return
 	}
@@ -4472,17 +4471,17 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 	if n != uint32(len(_p_.runq)/2) {
 		throw("runqputslow: queue is not full")
 	}
-	// ?runq?????????runq??????batch?
+	// 从runq头部开始取出一半的runq放到临时变量batch里
 	for i := uint32(0); i < n; i++ {
 		batch[i] = _p_.runq[(h+i)%uint32(len(_p_.runq))].ptr()
 	}
 	if !atomic.Cas(&_p_.runqhead, h, h+n) { // cas-release, commits consume
 		return false
 	}
-	// ??put?g???batch?
+	// 把要put的g也放进batch去
 	batch[n] = gp
 
-	// ?????????????????????????,?????????????????,?????????????????
+	// 注释说在竞争检测中为了避免不规范的测试和潜在的假设,所以随机，不明白潜在的假设是指什么,似乎是一种没想清楚的绕过问题的逻辑
 	if randomizeScheduler {
 		for i := uint32(1); i <= n; i++ {
 			j := fastrandn(i + 1)
@@ -4490,12 +4489,12 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 		}
 	}
 
-	// ???????runq????
+	// 把取出来的一半runq组成链表
 	for i := uint32(0); i < n; i++ {
 		batch[i].schedlink.set(batch[i+1])
 	}
 
-	// ????runq??global???,?????????????,????????????????????????
+	// 将一半的runq放到global队列里,一次多转移一些省得转移频繁,真的转移一半就是最合理的吗？不好判断就只好折中了
 	lock(&sched.lock)
 	globrunqputbatch(batch[0], batch[n], int32(n+1))
 	unlock(&sched.lock)
@@ -4508,7 +4507,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 // Executed only by the owner P.
 func runqget(_p_ *p) (gp *g, inheritTime bool) {
 	// If there's a runnext, it's the next G to run.
-	// ???runnext?????g???????runq???
+	// 优先从runnext里获取一个g，如果没有则从runq里获取
 	for {
 		next := _p_.runnext
 		if next == 0 {
@@ -4519,7 +4518,7 @@ func runqget(_p_ *p) (gp *g, inheritTime bool) {
 		}
 	}
 
-	// ?????
+	// 从队头获取
 	for {
 		h := atomic.Load(&_p_.runqhead) // load-acquire, synchronize with other consumers
 		t := _p_.runqtail
@@ -4537,15 +4536,15 @@ func runqget(_p_ *p) (gp *g, inheritTime bool) {
 // Batch is a ring buffer starting at batchHead.
 // Returns number of grabbed goroutines.
 // Can be executed by any P.
-// ?P??????G,??batch?
+// 从P里获取一半的G,放到batch里
 func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool) uint32 {
 	for {
-		// ???????
+		// 计算一半的数量
 		h := atomic.Load(&_p_.runqhead) // load-acquire, synchronize with other consumers
 		t := atomic.Load(&_p_.runqtail) // load-acquire, synchronize with the producer
 		n := t - h
 		n = n - n/2
-		if n == 0 { // ????????runnext??
+		if n == 0 { // 如果没有，尝试偷runnext里的
 			if stealRunNextG {
 				// Try to steal from _p_.runnext.
 				if next := _p_.runnext; next != 0 {
@@ -4569,19 +4568,19 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 					if !_p_.runnext.cas(next, 0) {
 						continue
 					}
-					// ????runnext??G??P??
+					// 把被偷的runnext里的G放到P尾部
 					batch[batchHead%uint32(len(batch))] = next
 					return 1
 				}
 			}
 			return 0
 		}
-		// ???????????????????
-		// (??????????????????????????????)
+		// 检查下异常，不可能偷到大于一半的，重试
+		// (这代码也够蛋疼的，控制好的逻辑还会无法保障获取的数量有问题。)
 		if n > uint32(len(_p_.runq)/2) { // read inconsistent h and t
 			continue
 		}
-		// ???????????P???
+		// 将偷到的任务转移到本地P队列里
 		for i := uint32(0); i < n; i++ {
 			g := _p_.runq[(h+i)%uint32(len(_p_.runq))]
 			batch[(batchHead+i)%uint32(len(batch))] = g
@@ -4595,7 +4594,7 @@ func runqgrab(_p_ *p, batch *[256]guintptr, batchHead uint32, stealRunNextG bool
 // Steal half of elements from local runnable queue of p2
 // and put onto local runnable queue of p.
 // Returns one of the stolen elements (or nil if failed).
-// ??P2???????????????nil
+// 偷取P2一半到本地运行队列，失败则返回nil
 func runqsteal(_p_, p2 *p, stealRunNextG bool) *g {
 	t := _p_.runqtail
 	n := runqgrab(p2, &_p_.runq, t, stealRunNextG)
@@ -4603,7 +4602,7 @@ func runqsteal(_p_, p2 *p, stealRunNextG bool) *g {
 		return nil
 	}
 	n--
-	// ???????G
+	// 返回尾部的一个G
 	gp := _p_.runq[(t+n)%uint32(len(_p_.runq))].ptr()
 	if n == 0 {
 		return gp
@@ -4771,3 +4770,4 @@ func gcd(a, b uint32) uint32 {
 	}
 	return a
 }
+

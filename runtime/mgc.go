@@ -289,6 +289,9 @@ func setGCPhase(x uint32) {
 // is mutator assists, which happen in response to allocations and are
 // not scheduled. The other three are variations in the per-P mark
 // workers and are distinguished by gcMarkWorkerMode.
+// 并发mark有4种不同的机制。
+// 一个是辅助标记，当分配内存的时候触发，并不是计划内的。
+// 其余的3个是在每个P下的mark任务里变更
 type gcMarkWorkerMode int
 
 const (
@@ -417,6 +420,7 @@ type gcControllerState struct {
 
 // startCycle resets the GC controller's state and computes estimates
 // for a new GC cycle. The caller must hold worldsema.
+// 新一轮gc开始前，初始化各种状态字段和计算变量
 func (c *gcControllerState) startCycle() {
 	c.scanWork = 0
 	c.bgScanCredit = 0
@@ -1246,23 +1250,25 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	}
 
 	if mode == gcBackgroundMode {
+		// 开启并发mark任务,这里只是启动任务，并没有实质mark操作
+		// 注意在这里还没有开始STW
 		gcBgMarkStartWorkers()
 	}
 
-	gcResetMarkState()
+	gcResetMarkState() // 重置mark相关状态
 
 	work.stwprocs, work.maxprocs = gcprocs(), gomaxprocs
 	work.heap0 = atomic.Load64(&memstats.heap_live)
 	work.pauseNS = 0
 	work.mode = mode
 
-	now := nanotime()
-	work.tSweepTerm = now
+	now := nanotime()     // 开始时间：该设计即是sweep开始时间也是mark开始时间
+	work.tSweepTerm = now // 记录开始sweep阶段时间
 	work.pauseStart = now
 	systemstack(stopTheWorldWithSema)
 	// Finish sweep before we start concurrent scan.
 	systemstack(func() {
-		finishsweep_m()
+		finishsweep_m() // 开始sweep
 	})
 	// clearpools before we start the GC. If we wait they memory will not be
 	// reclaimed until the next GC cycle.
@@ -1270,7 +1276,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 
 	work.cycles++
 	if mode == gcBackgroundMode { // Do as much work concurrently as possible
-		gcController.startCycle()
+		gcController.startCycle() // 新一轮gc开始前，初始化各种状态字段和计算变量
 		work.heapGoal = memstats.next_gc
 
 		// Enter concurrent mark phase and enable
@@ -1287,7 +1293,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		// allocations are blocked until assists can
 		// happen, we want enable assists as early as
 		// possible.
-		setGCPhase(_GCmark)
+		setGCPhase(_GCmark) // 标记gc mark阶段
 
 		gcBgMarkPrepare() // Must happen before assist enable.
 		gcMarkRootPrepare()
@@ -1304,17 +1310,19 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		// black invariant. Enable mutator assists to
 		// put back-pressure on fast allocating
 		// mutators.
-		atomic.Store(&gcBlackenEnabled, 1)
+		atomic.Store(&gcBlackenEnabled, 1) // 标记可以开启辅助mark
 
 		// Assists and workers can start the moment we start
 		// the world.
+		// 记录本次gc的mark阶段开始时间,
+		// 当下面start-the-word的时候即开始进行辅助mark或者mark任务
 		gcController.markStartTime = now
 
 		// Concurrent mark.
 		systemstack(startTheWorldWithSema)
 		now = nanotime()
-		work.pauseNS += now - work.pauseStart
-		work.tMark = now
+		work.pauseNS += now - work.pauseStart // pauseNS为真正STW时长，这里累加的是sweep截断STW的耗时
+		work.tMark = now                      // 记录gc标记阶段的开始时间
 	} else {
 		t := nanotime()
 		work.tMark, work.tMarkTerm = t, t
@@ -1648,6 +1656,8 @@ func gcMarkTermination(nextTriggerRatio float64) {
 // These goroutines will not run until the mark phase, but they must
 // be started while the work is not stopped and from a regular G
 // stack. The caller must hold worldsema.
+// 预备后台mark任务goroutines，直到mark阶段这些goroutines不会运行，
+// 但是它们必须启动
 func gcBgMarkStartWorkers() {
 	// Background marking is performed by per-P G's. Ensure that
 	// each P has a background GC G.
@@ -1658,7 +1668,7 @@ func gcBgMarkStartWorkers() {
 		}
 		if p.gcBgMarkWorker == 0 {
 			go gcBgMarkWorker(p)
-			notetsleepg(&work.bgMarkReady, -1) //标记休眠
+			notetsleepg(&work.bgMarkReady, -1) // TODO 在gcBgMarkWorker()里很快就会唤醒，这里是为了控制逐个P启动mark任务？
 			noteclear(&work.bgMarkReady)
 		}
 	}
@@ -1709,6 +1719,9 @@ func gcBgMarkWorker(_p_ *p) {
 		// Go to sleep until woken by gcController.findRunnable.
 		// We can't releasem yet since even the call to gopark
 		// may be preempted.
+		// 把G进入_Gwaiting然后休眠,
+		// 所以这里这是开启了mark任务，但并没有实际开始mark
+		// 而是先进入休眠等待sweep阶段完成后通过start-the-word后才会唤醒切换到_Grunning状态
 		gopark(func(g *g, parkp unsafe.Pointer) bool {
 			park := (*parkInfo)(parkp)
 
@@ -2180,3 +2193,4 @@ func fmtNSAsMS(buf []byte, ns uint64) []byte {
 	}
 	return itoaDiv(buf, x, dec)
 }
+
