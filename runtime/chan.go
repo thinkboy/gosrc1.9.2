@@ -36,7 +36,7 @@ type hchan struct {
 	closed   uint32
 	elemtype *_type // element type
 	sendx    uint   // send index // chan buffer的发送的索引
-	recvx    uint   // receive index
+	recvx    uint   // receive index // chan buffer的接收的索引
 	recvq    waitq  // list of recv waiters // 接收队列
 	sendq    waitq  // list of send waiters // 发送队列
 
