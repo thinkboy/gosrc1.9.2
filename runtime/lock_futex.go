@@ -152,6 +152,7 @@ func notewakeup(n *note) {
 	futexwakeup(key32(&n.key), 1)
 }
 
+// 进入休眠状态，通过调用系统lock函数实现
 func notesleep(n *note) {
 	gp := getg()
 	if gp != gp.m.g0 {
