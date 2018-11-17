@@ -194,6 +194,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		t0 = cputicks()
 	}
 
+	// 此处锁实现会有几十次自璇操作，因此会耗损一些cpu
 	lock(&c.lock)
 
 	if c.closed != 0 { // 这里就说明了，如果给关闭的chan里面发数据，一定会panic
@@ -210,7 +211,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		return true
 	}
 
-	// 如果当前chan里的元素个数小于环形队列大小(也就是chan还没满),则把内存拷贝到channel buffer里，然后直接返回
+	// 如果当前chan里的元素个数小于环形队列大小(也就是chan还没满),则把内存拷贝到channel buffer里，然后直接返回。
 	// 注意dataqsiz是允许为0的，当为0时，也不存在该if里面的内存copy
 	if c.qcount < c.dataqsiz {
 		// Space is available in the channel buffer. Enqueue the element to send.
