@@ -295,6 +295,7 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason s
 
 // Puts the current goroutine into a waiting state and unlocks the lock.
 // The goroutine can be made runnable again by calling goready(gp).
+// 切换到g0，把当前G切到_Gwaiting状态，解锁lock.
 func goparkunlock(lock *mutex, reason string, traceEv byte, traceskip int) {
 	gopark(parkunlock_c, unsafe.Pointer(lock), reason, traceEv, traceskip)
 }
@@ -305,6 +306,7 @@ func goready(gp *g, traceskip int) {
 	})
 }
 
+// TODO sudog似乎是一个特殊的g列表？
 //go:nosplit
 func acquireSudog() *sudog {
 	// Delicate dance: the semaphore implementation calls
@@ -485,6 +487,7 @@ func schedinit() {
 	tracebackinit()
 	moduledataverify()
 	stackinit()
+	// schedinit()的时候初始化spans、bitmap、arena三个区域大小，并初始化mheap以及mheap里的mcentral
 	mallocinit()
 	// 初始化当前M
 	mcommoninit(_g_.m)

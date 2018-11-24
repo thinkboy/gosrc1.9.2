@@ -214,6 +214,7 @@ var physPageSize uintptr
 // SysFault marks a (already sysAlloc'd) region to fault
 // if accessed. Used only for debugging the runtime.
 
+// schedinit()的时候初始化spans、bitmap、arena三个区域大小，并初始化mheap以及mheap里的mcentral
 func mallocinit() {
 	if class_to_size[_TinySizeClass] != _TinySize {
 		throw("bad TinySizeClass")
@@ -246,6 +247,7 @@ func mallocinit() {
 	var reserved bool
 
 	// The spans array holds one *mspan per _PageSize of arena.
+	// 计算spans、bitmap区域大小
 	var spansSize uintptr = (_MaxMem + 1) / _PageSize * sys.PtrSize
 	spansSize = round(spansSize, _PageSize)
 	// The bitmap holds 2 bits per word of arena.
@@ -254,7 +256,7 @@ func mallocinit() {
 
 	// Set up the allocation arena, a contiguous area of memory where
 	// allocated data will be found.
-	if sys.PtrSize == 8 {
+	if sys.PtrSize == 8 { // 如果是64位系统
 		// On a 64-bit machine, allocate from a single contiguous reservation.
 		// 512 GB (MaxMem) should be big enough for now.
 		//
@@ -284,7 +286,7 @@ func mallocinit() {
 		// allocation at 0x40 << 32 because when using 4k pages with 3-level
 		// translation buffers, the user address space is limited to 39 bits
 		// On darwin/arm64, the address space is even smaller.
-		arenaSize := round(_MaxMem, _PageSize)
+		arenaSize := round(_MaxMem, _PageSize) // 计算 arena区域大小
 		pSize = bitmapSize + spansSize + arenaSize + _PageSize
 		for i := 0; i <= 0x7f; i++ {
 			switch {
@@ -364,22 +366,23 @@ func mallocinit() {
 	// PageSize can be larger than OS definition of page size,
 	// so SysReserve can give us a PageSize-unaligned pointer.
 	// To overcome this we ask for PageSize more and round up the pointer.
+	// 地址对齐并调整，os page size是4KB,而_PageSize==8KB
 	p1 := round(p, _PageSize)
 	pSize -= p1 - p
 
 	spansStart := p1
 	p1 += spansSize
-	mheap_.bitmap = p1 + bitmapSize
-	p1 += bitmapSize
+	mheap_.bitmap = p1 + bitmapSize // 使mheap_.bitmap指向bitmap区域尾部
+	p1 += bitmapSize                // 此时p1指向了arena区域头部
 	if sys.PtrSize == 4 {
 		// Set arena_start such that we can accept memory
 		// reservations located anywhere in the 4GB virtual space.
 		mheap_.arena_start = 0
 	} else {
-		mheap_.arena_start = p1
+		mheap_.arena_start = p1 // 将mheap_.arena_start指向arena区域头部
 	}
-	mheap_.arena_end = p + pSize
-	mheap_.arena_used = p1
+	mheap_.arena_end = p + pSize // 将mheap_.arena_start指向arena区域尾部
+	mheap_.arena_used = p1       // 此时mheap_.arena_used指向arena区域头部
 	mheap_.arena_alloc = p1
 	mheap_.arena_reserved = reserved
 
@@ -389,9 +392,10 @@ func mallocinit() {
 	}
 
 	// Initialize the rest of the allocator.
-	mheap_.init(spansStart, spansSize)
+	// 初始化mheap堆内存
+	mheap_.init(spansStart, spansSize) // 依据spans区域初始化mheap大小
 	_g_ := getg()
-	_g_.m.mcache = allocmcache()
+	_g_.m.mcache = allocmcache() // 给主G分配自己的内存cache
 }
 
 // sysAlloc allocates the next n bytes from the heap arena. The
@@ -579,12 +583,16 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 // Allocate an object of size bytes.
 // Small objects are allocated from the per-P cache's free lists.
 // Large objects (> 32 kB) are allocated straight from the heap.
+// 内存分配函数，分配size大小的对象
+// 小对象从每个P的mcache的free lists里获取
+// 大对象(>32kB)直接从heap里分配
+// 对象分配的归类分为三种：0长度对象、小对象、大对象。而小对象又分为微小对象、小对象
 func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	if gcphase == _GCmarktermination {
 		throw("mallocgc called with gcphase == _GCmarktermination")
 	}
 
-	if size == 0 {
+	if size == 0 { // 0长度大小的对象，直接返回全局对象zerobase的指针,注意这里是个全局对象，所以指针相同
 		return unsafe.Pointer(&zerobase)
 	}
 
@@ -635,7 +643,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	var x unsafe.Pointer
 	noscan := typ == nil || typ.kind&kindNoPointers != 0
 	// 小对象, maxSmallSize=32KB
-	// 小对象里面又区分微小对象跟小对象，微小对象maxTinySize=16B
+	// 小对象里面又区分微小对象跟小对象，微小对象 maxTinySize=16B
 	if size <= maxSmallSize {
 		if noscan && size < maxTinySize {
 			// Tiny allocator.
@@ -820,13 +828,14 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	return x
 }
 
+// 分配一个大对象
 func largeAlloc(size uintptr, needzero bool, noscan bool) *mspan {
 	// print("largeAlloc size=", size, "\n")
 
 	if size+_PageSize < size {
 		throw("out of memory")
 	}
-	npages := size >> _PageShift
+	npages := size >> _PageShift // 大块内存以页为单位，因此这里按页大小计算出页数
 	if size&_PageMask != 0 {
 		npages++
 	}
@@ -836,6 +845,7 @@ func largeAlloc(size uintptr, needzero bool, noscan bool) *mspan {
 	// pays the debt down to npage pages.
 	deductSweepCredit(npages*_PageSize, npages)
 
+	// 直接从mheap_里分配一个大对象
 	s := mheap_.alloc(npages, makeSpanClass(0, noscan), true, needzero)
 	if s == nil {
 		throw("out of memory")
@@ -848,6 +858,7 @@ func largeAlloc(size uintptr, needzero bool, noscan bool) *mspan {
 // implementation of new builtin
 // compiler (both frontend and SSA backend) knows the signature
 // of this function
+// now()函数的内建实现函数
 func newobject(typ *_type) unsafe.Pointer {
 	return mallocgc(typ.size, typ, true)
 }

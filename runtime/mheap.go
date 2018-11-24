@@ -28,9 +28,11 @@ const minPhysPageSize = 4096
 //
 //go:notinheap
 type mheap struct {
-	lock      mutex
-	free      [_MaxMHeapList]mSpanList // 页数127以内的闲置span链表数组 //free lists of given length up to _MaxMHeapList
-	freelarge mTreap                   // 页数大于127的闲置span链表 //free treap of length >= _MaxMHeapList
+	lock mutex
+	// 页数128(包括)以内的闲置span链表数组,_MaxMHeapList==128说明储存了1~128页规格的Span列表
+	free [_MaxMHeapList]mSpanList //free lists of given length up to _MaxMHeapList
+	// 页数大于128的闲置span链表,该链表采用"树堆(tream)"数据结构存储
+	freelarge mTreap                   //free treap of length >= _MaxMHeapList
 	busy      [_MaxMHeapList]mSpanList // busy lists of large spans of given length
 	busylarge mSpanList                // busy lists of large spans length >= _MaxMHeapList
 	sweepgen  uint32                   // sweep generation, see comment in mspan
@@ -108,7 +110,7 @@ type mheap struct {
 	nsmallfree  [_NumSizeClasses]uint64 // number of frees for small objects (<=maxsmallsize)
 
 	// range of addresses we might see in the heap
-	bitmap        uintptr // Points to one byte past the end of the bitmap
+	bitmap        uintptr // Points to one byte past the end of the bitmap //指向bitmap区域的指针，指向bitmap的尾部
 	bitmap_mapped uintptr
 
 	// The arena_* fields indicate the addresses of the Go heap.
@@ -120,14 +122,14 @@ type mheap struct {
 	// [arena_start, arena_used). Parts of this range may not be
 	// mapped, but the metadata structures are always mapped for
 	// the full range.
-	arena_start uintptr
+	arena_start uintptr // 指向arena区域头部指针
 	arena_used  uintptr // Set with setArenaUsed.
 
 	// The heap is grown using a linear allocator that allocates
 	// from the block [arena_alloc, arena_end). arena_alloc is
 	// often, but *not always* equal to arena_used.
 	arena_alloc uintptr
-	arena_end   uintptr
+	arena_end   uintptr // 指向arena区域尾部指针
 
 	// arena_reserved indicates that the memory [arena_alloc,
 	// arena_end) is reserved (e.g., mapped PROT_NONE). If this is
@@ -496,13 +498,14 @@ func (h *mheap) init(spansStart, spansBytes uintptr) {
 
 	h.busylarge.init()
 	for i := range h.central {
-		h.central[i].mcentral.init(spanClass(i))
+		h.central[i].mcentral.init(spanClass(i)) // 初始化mcentral
 	}
 
+	// 初始化h.spans数组大小,数组元素存放的是指针
 	sp := (*slice)(unsafe.Pointer(&h.spans))
 	sp.array = unsafe.Pointer(spansStart)
 	sp.len = 0
-	sp.cap = int(spansBytes / sys.PtrSize)
+	sp.cap = int(spansBytes / sys.PtrSize) // 计算h.spans数组大小(sys.PtrSize==8)
 
 	// Map metadata structures. But don't map race detector memory
 	// since we're not actually growing the arena here (and TSAN
@@ -737,7 +740,7 @@ func (h *mheap) alloc(npage uintptr, spanclass spanClass, large bool, needzero b
 		s = h.alloc_m(npage, spanclass, large)
 	})
 
-	// TODO 在分配之前需要把span清0  why?
+	// TODO s.needzero变量的解释是:在分配之前需要把span清0  why?
 	if s != nil {
 		if needzero && s.needzero != 0 {
 			memclrNoHeapPointers(unsafe.Pointer(s.base()), s.npages<<_PageShift)
@@ -786,12 +789,13 @@ func (h *mheap) allocManual(npage uintptr, stat *uint64) *mspan {
 // Allocates a span of the given size.  h must be locked.
 // The returned span has been removed from the
 // free list, but its state is still MSpanFree.
+// 分配指定规格page size的Span,调用此函数时mheap一定被锁了
 func (h *mheap) allocSpanLocked(npage uintptr, stat *uint64) *mspan {
 	var list *mSpanList
 	var s *mspan
 
 	// Try in fixed-size lists up to max.
-	// 先尝试获取指定页数的span，不行就试页数更多的
+	// 先尝试从h.free获取指定规格page size的Span，不行再从规格更大的找空闲Span
 	for i := int(npage); i < len(h.free); i++ {
 		list = &h.free[i]
 		if !list.isEmpty() {
@@ -801,7 +805,7 @@ func (h *mheap) allocSpanLocked(npage uintptr, stat *uint64) *mspan {
 		}
 	}
 	// Best fit in list of large spans.
-	// 再不行，就试页数超过127的超大span
+	// 再不行，就试页数超过128的超大span
 	s = h.allocLarge(npage) // allocLarge removed s from h.freelarge for us
 	// 还没有就得从系统申请了
 	if s == nil {
@@ -873,6 +877,7 @@ func (h *mheap) isLargeSpan(npages uintptr) bool {
 
 // allocLarge allocates a span of at least npage pages from the treap of large spans.
 // Returns nil if no such span currently exists.
+// 分配一个大于128页数的span
 func (h *mheap) allocLarge(npage uintptr) *mspan {
 	// Search treap for smallest span with >= npage pages.
 	return h.freelarge.remove(npage)
@@ -882,13 +887,14 @@ func (h *mheap) allocLarge(npage uintptr) *mspan {
 // returning whether it worked.
 //
 // h must be locked.
+// 向系统申请内存，最小1MB
 func (h *mheap) grow(npage uintptr) bool {
 	// Ask for a big chunk, to reduce the number of mappings
 	// the operating system needs to track; also amortizes
 	// the overhead of an operating system mapping.
 	// Allocate a multiple of 64kB.
 	// 大小总是按64KB的倍数分配,最小1MB
-	npage = round(npage, (64<<10)/_PageSize)
+	npage = round(npage, (64<<10)/_PageSize) // 按64KB补齐页数
 	ask := npage << _PageShift
 	if ask < _HeapAllocChunk {
 		ask = _HeapAllocChunk
@@ -912,7 +918,7 @@ func (h *mheap) grow(npage uintptr) bool {
 	s := (*mspan)(h.spanalloc.alloc())
 	s.init(uintptr(v), ask>>_PageShift)
 	p := (s.base() - h.arena_start) >> _PageShift
-	for i := p; i < p+s.npages; i++ {
+	for i := p; i < p+s.npages; i++ { // TODO 为啥这里把同一个s放到多个spans里，spans是怎么操作的?
 		h.spans[i] = s
 	}
 	atomic.Store(&s.sweepgen, h.sweepgen)
