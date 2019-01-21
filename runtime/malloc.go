@@ -214,7 +214,7 @@ var physPageSize uintptr
 // SysFault marks a (already sysAlloc'd) region to fault
 // if accessed. Used only for debugging the runtime.
 
-// schedinit()的时候初始化spans、bitmap、arena三个区域大小，并初始化mheap以及mheap里的mcentral
+// 初始化spans、bitmap、arena三个区域大小，并初始化mheap以及mheap里的mcentral
 func mallocinit() {
 	if class_to_size[_TinySizeClass] != _TinySize {
 		throw("bad TinySizeClass")
@@ -1026,4 +1026,3 @@ func persistentalloc1(size, align uintptr, sysStat *uint64) unsafe.Pointer {
 	}
 	return p
 }
-

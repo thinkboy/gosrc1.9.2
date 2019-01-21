@@ -76,8 +76,8 @@ var buildVersion = sys.TheVersion
 // for nmspinning manipulation.
 
 var (
-	m0           m
-	g0           g
+	m0           m // 全局M0
+	g0           g // 全局G0
 	raceprocctx0 uintptr
 )
 
@@ -116,6 +116,7 @@ func main() {
 	// Max stack size is 1 GB on 64-bit, 250 MB on 32-bit.
 	// Using decimal instead of binary GB and MB because
 	// they look nicer in the stack overflow failure message.
+	// 栈在64位系统里最大1GB
 	if sys.PtrSize == 8 {
 		maxstacksize = 1000000000
 	} else {
@@ -124,7 +125,7 @@ func main() {
 
 	// Allow newproc to start new Ms.
 	mainStarted = true
-
+	// 启动后台监控
 	systemstack(func() {
 		newm(sysmon, nil)
 	})
@@ -141,7 +142,7 @@ func main() {
 		throw("runtime.main not on m0")
 	}
 
-	// 执行runtime包初始化函数init
+	// 执行runtime包内的初始化函数init()
 	runtime_init() // must be before defer
 	if nanotime() == 0 {
 		throw("nanotime returning zero")
@@ -181,7 +182,7 @@ func main() {
 		cgocall(_cgo_notify_runtime_init_done, nil)
 	}
 
-	// 执行所有程序里的init函数
+	// 执行所有用户、标准库、三方库里的init函数
 	fn := main_init // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
 	close(main_init_done)
@@ -194,6 +195,7 @@ func main() {
 		// has a main, but it is not executed.
 		return
 	}
+	// 执行用户入口函数
 	fn = main_main // make an indirect call, as the linker doesn't know the address of the main package when laying down the runtime
 	fn()
 	if raceenabled {
@@ -233,6 +235,7 @@ func os_beforeExit() {
 }
 
 // start forcegc helper goroutine
+// runtime包内的初始化函数,runtime.main()里调用
 func init() {
 	go forcegchelper()
 }
@@ -486,10 +489,11 @@ func schedinit() {
 
 	tracebackinit()
 	moduledataverify()
+	// 初始化栈
 	stackinit()
-	// schedinit()的时候初始化spans、bitmap、arena三个区域大小，并初始化mheap以及mheap里的mcentral
+	// 内存分配器初始化
 	mallocinit()
-	// 初始化当前M
+	// 初始化当前M,即全局M0 TODO asm_amd64.s的启动过程中启动了一个M是做啥的?
 	mcommoninit(_g_.m)
 	alginit()       // maps must not be used before this call
 	modulesinit()   // provides activeModules
@@ -502,6 +506,7 @@ func schedinit() {
 	goargs()
 	goenvs()
 	parsedebugvars()
+	// 初始化gc回收器
 	gcinit()
 
 	sched.lastpoll = uint64(nanotime())
@@ -540,6 +545,7 @@ func checkmcount() {
 	}
 }
 
+// 通用M初始化方法
 func mcommoninit(mp *m) {
 	_g_ := getg()
 
@@ -4773,4 +4779,3 @@ func gcd(a, b uint32) uint32 {
 	}
 	return a
 }
-
