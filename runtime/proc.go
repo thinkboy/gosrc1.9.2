@@ -249,7 +249,7 @@ func forcegchelper() {
 			throw("forcegc: phase error")
 		}
 		atomic.Store(&forcegc.idle, 1)
-		//调到g0并解锁lock,由于调到g0，因此将不会继续执行
+		//切换到g0并解锁lock,由于切到g0，因此将不会继续执行,block到这里
 		goparkunlock(&forcegc.lock, "force gc (idle)", traceEvGoBlock, 1)
 		// this goroutine is explicitly resumed by sysmon
 		if debug.gctrace > 0 {
@@ -292,7 +292,9 @@ func gopark(unlockf func(*g, unsafe.Pointer) bool, lock unsafe.Pointer, reason s
 	mp.waittraceskip = traceskip
 	releasem(mp)
 	// can't do anything that might move the G between Ms here.
-	// 切换到g0状态，更改当前G状态为_Gwaiting状态,然后挂起当前G,再继续执行其余的G
+	// mcall 在M里从当前正在运行的G切换到g0
+	// park_m 在切换到的g0下先把传过来的G切换为_Gwaiting状态挂起该G
+	// 调用回调函数waitunlockf()由外层决定是否等待解锁，返回true则等待解锁不在执行G，返回false则不等待解锁继续执行
 	mcall(park_m)
 }
 
@@ -490,10 +492,11 @@ func schedinit() {
 	tracebackinit()
 	moduledataverify()
 	// 初始化栈
+	// 这里的栈主要用于创建G时候的栈
 	stackinit()
 	// 内存分配器初始化
 	mallocinit()
-	// 初始化当前M,即全局M0 TODO asm_amd64.s的启动过程中启动了一个M是做啥的?
+	// 初始化当前M,即全局M0
 	mcommoninit(_g_.m)
 	alginit()       // maps must not be used before this call
 	modulesinit()   // provides activeModules
@@ -1375,7 +1378,7 @@ func allocm(_p_ *p, fn func()) *m {
 	} else {
 		mp.g0 = malg(8192 * sys.StackGuardMultiplier)
 	}
-	// 标记g0正在关联的m为当前新建m
+	// 把新创建的g0与M做关联
 	mp.g0.m = mp
 
 	if _p_ == _g_.m.p.ptr() {
@@ -1938,7 +1941,9 @@ func gcstopm() {
 // acquiring a P in several places.
 //
 // 执行G
-// 注：运行中的G已经脱离了所有的运行队列、待运行队列等等.属于独立状态
+// 注：运行中的G已经脱离了所有的运行队列、待运行队列等等.属于游离状态
+// 只有g0状态时才会调用到该方法来执行另一个G
+// 这里执行的G是用的当前G0所在的M
 //go:yeswritebarrierrec
 func execute(gp *g, inheritTime bool) {
 	_g_ := getg()
@@ -1950,9 +1955,9 @@ func execute(gp *g, inheritTime bool) {
 	if !inheritTime {
 		_g_.m.p.ptr().schedtick++
 	}
-	// 让M记录当前正在执行的G
+	// M关联要执行的G
 	_g_.m.curg = gp
-	// 让G记录当前关联的M
+	// G关联当前的M
 	gp.m = _g_.m
 
 	// Check whether the profiler needs to be turned on or off.
@@ -1970,7 +1975,7 @@ func execute(gp *g, inheritTime bool) {
 		traceGoStart()
 	}
 
-	// 真正的执行g,汇编实现
+	// 真正的执行g（汇编实现）
 	gogo(&gp.sched)
 }
 
@@ -2268,8 +2273,8 @@ func injectglist(glist *g) {
 
 // One round of scheduler: find a runnable goroutine and execute it.
 // Never returns.
-// 找到一个可运行的goroutine并执行它
-// 永远不会returns
+// 找到一个可运行的G并执行它
+// 该方法永远不会return, schedule方法会不断的循环执行可运行的G.
 func schedule() {
 	_g_ := getg()
 
@@ -2310,7 +2315,8 @@ top:
 		// Check the global runnable queue once in a while to ensure fairness.
 		// Otherwise two goroutines can completely occupy the local runqueue
 		// by constantly respawning each other.
-		// 每处理n个任务就去全局队列获取G任务,确保公平 TODO 与上面的问题一样，怎么体现出来n个的?
+		// 每处理n个任务就去全局队列获取G任务,确保公平
+		// TODO 与上面的问题一样，怎么体现出来n个的?
 		if _g_.m.p.ptr().schedtick%61 == 0 && sched.runqsize > 0 {
 			lock(&sched.lock)
 			gp = globrunqget(_g_.m.p.ptr(), 1)
@@ -2324,7 +2330,7 @@ top:
 			throw("schedule: spinning with local work")
 		}
 	}
-	// 从其它地方获取G,如果获取不到则沉睡M，并且阻塞在这里
+	// 从其它地方获取G,如果获取不到则沉睡M，并且阻塞在这里，直到M被再次使用
 	if gp == nil {
 		gp, inheritTime = findrunnable() // blocks until work is available
 	}
@@ -2342,7 +2348,7 @@ top:
 		startlockedm(gp)
 		goto top
 	}
-	// 执行g
+	// 执行找到的G
 	execute(gp, inheritTime)
 }
 
@@ -2369,14 +2375,14 @@ func parkunlock_c(gp *g, lock unsafe.Pointer) bool {
 // g0状态下先把传过来的G切换为_Gwaiting状态挂起该G
 // 调用回调函数waitunlockf()由外层决定是否等待解锁，返回true则等待解锁不在执行G，返回false则不等待解锁继续执行
 func park_m(gp *g) {
-	_g_ := getg()
+	_g_ := getg() // 此处获得的是g0,而不是gp
 
 	if trace.enabled {
 		traceGoPark(_g_.m.waittraceev, _g_.m.waittraceskip)
 	}
 
 	casgstatus(gp, _Grunning, _Gwaiting)
-	dropg()
+	dropg() // 把g0从M的"当前运行"里剥离出来
 
 	if _g_.m.waitunlockf != nil {
 		fn := *(*func(*g, unsafe.Pointer) bool)(unsafe.Pointer(&_g_.m.waitunlockf))
@@ -2394,6 +2400,7 @@ func park_m(gp *g) {
 	schedule()
 }
 
+// 把G从_Grunning切到_Grunnable状态，并放到全局待运行队列里.然后继续schedule循环
 func goschedImpl(gp *g) {
 	status := readgstatus(gp)
 	if status&^_Gscan != _Grunning {
@@ -2410,6 +2417,7 @@ func goschedImpl(gp *g) {
 }
 
 // Gosched continuation on g0.
+// Gosched方法由用户可以控制终止G让出M
 func gosched_m(gp *g) {
 	if trace.enabled {
 		traceGoSched()
@@ -2418,6 +2426,7 @@ func gosched_m(gp *g) {
 }
 
 // goschedguarded is a forbidden-states-avoided version of gosched_m
+// 由goschedguarded调用，但是似乎没地方调用该方法
 func goschedguarded_m(gp *g) {
 
 	if gp.m.locks != 0 || gp.m.mallocing != 0 || gp.m.preemptoff != "" || gp.m.p.ptr().status != _Prunning {
@@ -2430,6 +2439,7 @@ func goschedguarded_m(gp *g) {
 	goschedImpl(gp)
 }
 
+// 抢占最后的时候剥离出运行状态的G
 func gopreempt_m(gp *g) {
 	if trace.enabled {
 		traceGoPreempt()
@@ -2439,7 +2449,7 @@ func gopreempt_m(gp *g) {
 
 // Finishes execution of the current goroutine.
 // 汇编代码里实现调用
-// 执行完G里面的方法后回到这里释放G
+// G执行结束后回到这里放到P的本地队列里
 func goexit1() {
 	if raceenabled {
 		racegoend()
@@ -2452,6 +2462,7 @@ func goexit1() {
 }
 
 // goexit continuation on g0.
+// g0下当G执行结束后回到这里放到P的本地队列里
 func goexit0(gp *g) {
 	_g_ := getg()
 
@@ -3137,6 +3148,8 @@ func newproc1(fn *funcval, argp *uint8, narg int32, nret int32, callerpc uintptr
 		wakep()
 	}
 	_g_.m.locks--
+	// 重新存储抢占标记，因为在retake函数里抢占的时候有可能_g_.stackguard0 = stackPreempt赋值失败，
+	// 在这里检查preempt抢占标记,如果是true再次赋值触发抢占
 	if _g_.m.locks == 0 && _g_.preempt { // restore the preemption request in case we've cleared it in newstack
 		_g_.stackguard0 = stackPreempt
 	}
@@ -3146,6 +3159,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, nret int32, callerpc uintptr
 // Put on gfree list.
 // If local list is too long, transfer a batch to the global list.
 // 把G放到P的gfree里
+// 如果空闲队列超过64个G，则提一批放到全局队列里
 func gfput(_p_ *p, gp *g) {
 	if readgstatus(gp) != _Gdead {
 		throw("gfput: bad status (not Gdead)")
@@ -3164,7 +3178,7 @@ func gfput(_p_ *p, gp *g) {
 	gp.schedlink.set(_p_.gfree)
 	_p_.gfree = gp
 	_p_.gfreecnt++
-	if _p_.gfreecnt >= 64 {
+	if _p_.gfreecnt >= 64 { // 如果空闲队列超过64个G，则提一批放到全局队列里
 		lock(&sched.gflock)
 		for _p_.gfreecnt >= 32 {
 			_p_.gfreecnt--
@@ -4120,7 +4134,7 @@ func retake(now int64) uint32 {
 				pd.schedwhen = now
 				continue
 			}
-			// 如果已经超过10ms，则抢占
+			// 如果已经超过forcePreemptNS(10ms)，则抢占
 			if pd.schedwhen+forcePreemptNS > now {
 				continue
 			}
@@ -4160,6 +4174,9 @@ func preemptall() bool {
 // The actual preemption will happen at some point in the future
 // and will be indicated by the gp->status no longer being
 // Grunning
+// 告诉正在P里的G停止运行
+// 注意：这里并不一定能够成功(有几个case不会被抢占),因此会返回false
+// 实际的抢占会在未来某个时刻发生，而不是在该函数里
 func preemptone(_p_ *p) bool {
 	mp := _p_.m.ptr()
 	if mp == nil || mp == getg().m {
@@ -4177,6 +4194,8 @@ func preemptone(_p_ *p) bool {
 	// comparing the current stack pointer to gp->stackguard0.
 	// Setting gp->stackguard0 to StackPreempt folds
 	// preemption into the normal stack overflow check.
+	// G里面的每一次调用都会比较当前栈指针与 gp->stackguard0 来检查堆栈溢出
+	// 设置 gp->stackguard0 为 StackPreempt 来触发正常的堆栈溢出检测
 	gp.stackguard0 = stackPreempt
 	return true
 }

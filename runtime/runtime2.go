@@ -332,7 +332,7 @@ type g struct {
 	_panic         *_panic        // innermost panic - offset known to liblink
 	_defer         *_defer        // innermost defer
 	m              *m             // current m; offset known to arm liblink
-	sched          gobuf          //保存了执行现场
+	sched          gobuf          // G的调度数据, 当G中断时会保存当前的PC和SP等值到这里, 恢复运行时会使用这里的值
 	syscallsp      uintptr        // if status==Gsyscall, syscallsp = sched.sp to use during gc
 	syscallpc      uintptr        // if status==Gsyscall, syscallpc = sched.pc to use during gc
 	stktopsp       uintptr        // expected sp at top of stack, to check in traceback
@@ -346,7 +346,7 @@ type g struct {
 	preempt        bool     // preemption signal, duplicates stackguard0 = stackpreempt
 	paniconfault   bool     // panic (instead of crash) on unexpected fault address
 	preemptscan    bool     // preempted g does scan for gc
-	gcscandone     bool     // g has scanned stack; protected by _Gscan bit in status
+	gcscandone     bool     // G是否扫描过栈的标记 // g has scanned stack; protected by _Gscan bit in status
 	gcscanvalid    bool     // false at start of gc cycle, true if G has not run since last scan; TODO: remove?
 	throwsplit     bool     // must not split stack
 	raceignore     int8     // ignore race detection events
