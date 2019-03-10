@@ -1663,9 +1663,9 @@ var execLock rwmutex
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrierrec
 func newm(fn func(), _p_ *p) {
-	// 创建一个m对象
+	// 创建一个M对象,切与P关联
 	mp := allocm(_p_, fn)
-	// 暂存p
+	// 暂存P
 	mp.nextp.set(_p_)
 	mp.sigmask = initSigmask
 	if iscgo {
@@ -1685,7 +1685,7 @@ func newm(fn func(), _p_ *p) {
 		return
 	}
 	execLock.rlock() // Prevent process clone.
-	// 创建系统线程
+	// 创建系统内核线程
 	newosproc(mp, unsafe.Pointer(mp.g0.stack.hi))
 	execLock.runlock()
 }
@@ -1739,6 +1739,7 @@ func mspinning() {
 // either decrement nmspinning or set m.spinning in the newly started M.
 //go:nowritebarrierrec
 // 调度一些M来运行P
+// 如果_p_为nil，则从空闲的P里取一个
 func startm(_p_ *p, spinning bool) {
 	lock(&sched.lock)
 	if _p_ == nil {
@@ -1853,7 +1854,7 @@ func wakep() {
 		return
 	}
 
-	// 开启一个m执行p，由于第一个参数为nil，则从空闲的p里取
+	// 开启一个M执行P，由于第一个参数为nil，则从空闲的p里取
 	startm(nil, true)
 }
 
@@ -2316,7 +2317,6 @@ top:
 		// Otherwise two goroutines can completely occupy the local runqueue
 		// by constantly respawning each other.
 		// 每处理n个任务就去全局队列获取G任务,确保公平
-		// TODO 与上面的问题一样，怎么体现出来n个的?
 		if _g_.m.p.ptr().schedtick%61 == 0 && sched.runqsize > 0 {
 			lock(&sched.lock)
 			gp = globrunqget(_g_.m.p.ptr(), 1)
@@ -2397,7 +2397,7 @@ func park_m(gp *g) {
 			execute(gp, true) // Schedule it back, never returns.
 		}
 	}
-	schedule()
+	schedule() // 继续进行调度循环
 }
 
 // 把G从_Grunning切到_Grunnable状态，并放到全局待运行队列里.然后继续schedule循环
@@ -4471,7 +4471,8 @@ func runqput(_p_ *p, gp *g, next bool) {
 	}
 
 retry:
-	//如果_p_.runq队列不满，则放到队尾
+	// 如果_p_.runq队列不满，则放到队尾
+	// 试想如果不放到对尾而放到队头里会怎样？如果频繁的创建G则可能后面的G总是不被执行，对后面的G不公平
 	h := atomic.Load(&_p_.runqhead) // load-acquire, synchronize with consumers
 	t := _p_.runqtail
 	if t-h < uint32(len(_p_.runq)) {
@@ -4506,7 +4507,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 	if !atomic.Cas(&_p_.runqhead, h, h+n) { // cas-release, commits consume
 		return false
 	}
-	// 把要put的g也放进batch去
+	// 把要put的G也放进batch去
 	batch[n] = gp
 
 	// 注释说在竞争检测中为了避免不规范的测试和潜在的假设,所以随机，不明白潜在的假设是指什么,似乎是一种没想清楚的绕过问题的逻辑
@@ -4522,7 +4523,7 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 		batch[i].schedlink.set(batch[i+1])
 	}
 
-	// 将一半的runq放到global队列里,一次多转移一些省得转移频繁,真的转移一半就是最合理的吗？不好判断就只好折中了
+	// 将一半的runq放到global队列里,一次多转移一些省得转移频繁
 	lock(&sched.lock)
 	globrunqputbatch(batch[0], batch[n], int32(n+1))
 	unlock(&sched.lock)
