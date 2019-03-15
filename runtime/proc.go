@@ -1663,7 +1663,7 @@ var execLock rwmutex
 // May run with m.p==nil, so write barriers are not allowed.
 //go:nowritebarrierrec
 func newm(fn func(), _p_ *p) {
-	// 创建一个M对象,切与P关联
+	// 创建一个M对象,且与P关联
 	mp := allocm(_p_, fn)
 	// 暂存P
 	mp.nextp.set(_p_)
@@ -3760,7 +3760,7 @@ func procresize(nprocs int32) *p {
 		p := allp[0]
 		p.m = 0
 		p.status = _Pidle
-		acquirep(p)
+		acquirep(p) // M0里的P是在这里赋值的
 		if trace.enabled {
 			traceGoStart()
 		}
@@ -4456,7 +4456,7 @@ func runqput(_p_ *p, gp *g, next bool) {
 		next = false
 	}
 
-	// 尝试把G添加到P的runnext节点，这里确保runnext只有一个G，如果之前已经有一个g则踢出来放到runq里
+	// 尝试把G添加到P的runnext节点，这里确保runnext只有一个G，如果之前已经有一个G则踢出来放到runq里
 	if next {
 	retryNext:
 		oldnext := _p_.runnext
@@ -4466,13 +4466,13 @@ func runqput(_p_ *p, gp *g, next bool) {
 		if oldnext == 0 {
 			return
 		}
-		// 把老的g踢出来，在下面放到runq里
+		// 把老的G踢出来，在下面放到runq里
 		gp = oldnext.ptr()
 	}
 
 retry:
-	// 如果_p_.runq队列不满，则放到队尾
-	// 试想如果不放到对尾而放到队头里会怎样？如果频繁的创建G则可能后面的G总是不被执行，对后面的G不公平
+	// 如果_p_.runq队列不满，则放到队尾就结束了。
+	// 试想如果不放到队尾而放到队头里会怎样？如果频繁的创建G则可能后面的G总是不被执行，对后面的G不公平
 	h := atomic.Load(&_p_.runqhead) // load-acquire, synchronize with consumers
 	t := _p_.runqtail
 	if t-h < uint32(len(_p_.runq)) {
@@ -4480,8 +4480,8 @@ retry:
 		atomic.Store(&_p_.runqtail, t+1) // store-release, makes the item available for consumption
 		return
 	}
-	//最后尝试把g和当前p里的一部分runq放到全局队列
-	//因为需要加锁,所以slow
+	//如果队列满了，尝试把G和当前P里的一部分runq放到全局队列
+	//因为操作全局需要加锁,所以名字里带个slow
 	if runqputslow(_p_, gp, h, t) {
 		return
 	}
