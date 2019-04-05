@@ -3969,6 +3969,8 @@ func sysmon() {
 	idle := 0 // how many cycles in succession we had not wokeup somebody
 	delay := uint32(0)
 	for {
+		// delay参数用于控制for循环的间隔，不至于无限死循环。
+		// 控制逻辑是前50次每次sleep 20微秒，超过50次则每次翻2倍，直到最大10毫秒
 		if idle == 0 { // start with 20us sleep...
 			delay = 20
 		} else if idle > 50 { // start doubling the sleep after 1ms...
@@ -4024,8 +4026,8 @@ func sysmon() {
 			asmcgocall(*cgo_yield, nil)
 		}
 		// poll network if not polled for more than 10ms
-		// 获取超过10ms的netpoll结果
-		// 这里想到一个问题，超过10ms才会从epoll里获取可运行的任务，会不会造成所有网络通讯都延迟10ms以上？
+		// 获取超过10ms的netpoll结果。
+		// PS:这里想到一个问题，超过10ms才会从epoll里获取可运行的任务，会不会造成所有网络通讯都延迟10ms以上？
 		// 答案是当然不会,不要忘了在G调度的时候,findrunnable()会执行netpoll()方法获取任务
 		lastpoll := int64(atomic.Load64(&sched.lastpoll))
 		now := nanotime()
