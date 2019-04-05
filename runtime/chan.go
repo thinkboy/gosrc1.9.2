@@ -194,7 +194,7 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		t0 = cputicks()
 	}
 
-	// 此处锁实现会有几十次自璇操作，因此会耗损一些cpu
+	// PS:当频繁给一个chan里发送数据，这里的锁也可能会耗损一些cpu
 	lock(&c.lock)
 
 	if c.closed != 0 { // 这里就说明了，如果给关闭的chan里面发数据，一定会panic
@@ -202,15 +202,16 @@ func chansend(c *hchan, ep unsafe.Pointer, block bool, callerpc uintptr) bool {
 		panic(plainError("send on closed channel"))
 	}
 
+	// 寻找一个等待中的receiver，如果存在，直接把值传给这个receiver，绕过下面channel buffer，
+	// 避免从sender buffer->chan buffer->receiver buffer，而是直接sender buffer->receiver buffer，仍然做了内存copy
 	if sg := c.recvq.dequeue(); sg != nil {
 		// Found a waiting receiver. We pass the value we want to send
 		// directly to the receiver, bypassing the channel buffer (if any).
-		// 寻找一个等待中的receiver，直接把值传给这个receiver，绕过下面channel buffer，
-		// 避免从sender buffer->chan buffer->receiver buffer，而是直接sender buffer->receiver buffer，仍然做了内存copy
 		send(c, sg, ep, func() { unlock(&c.lock) }, 3)
 		return true
 	}
 
+	// 如果没有receiver等待:
 	// 如果当前chan里的元素个数小于环形队列大小(也就是chan还没满),则把内存拷贝到channel buffer里，然后直接返回。
 	// 注意dataqsiz是允许为0的，当为0时，也不存在该if里面的内存copy
 	if c.qcount < c.dataqsiz {
@@ -610,6 +611,7 @@ func recv(c *hchan, sg *sudog, ep unsafe.Pointer, unlockf func(), skip int) {
 		}
 		// copy data from queue to receiver
 		if ep != nil {
+			// 这里取的数据不是正在等待的sender的数据，而是从chan的开头的内存取，如果是sender的数据则读出来的数据顺序就乱了
 			typedmemmove(c.elemtype, ep, qp)
 		}
 		// copy data from sender to queue
@@ -775,4 +777,3 @@ func racesync(c *hchan, sg *sudog) {
 	racereleaseg(sg.g, chanbuf(c, 0))
 	raceacquire(chanbuf(c, 0))
 }
-
