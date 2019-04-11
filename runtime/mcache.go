@@ -28,13 +28,13 @@ type mcache struct {
 	// tiny is a heap pointer. Since mcache is in non-GC'd memory,
 	// we handle it by clearing it in releaseAll during mark
 	// termination.
-	tiny             uintptr
-	tinyoffset       uintptr
-	local_tinyallocs uintptr // number of tiny allocs not counted in other stats
+	tiny             uintptr // 16字节tiny的内存指针
+	tinyoffset       uintptr // 已经使用到的内存地址便宜
+	local_tinyallocs uintptr // 通过tiny分配内存的次数 number of tiny allocs not counted in other stats
 
 	// The rest is not accessed on every malloc.
 
-	alloc [numSpanClasses]*mspan // spans to allocate from, indexed by spanClass
+	alloc [numSpanClasses]*mspan // cache住的不同大小内存块的span // spans to allocate from, indexed by spanClass
 
 	stackcache [_NumStackOrders]stackfreelist
 
@@ -147,4 +147,3 @@ func (c *mcache) releaseAll() {
 	c.tiny = 0
 	c.tinyoffset = 0
 }
-

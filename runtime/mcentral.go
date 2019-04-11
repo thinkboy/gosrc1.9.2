@@ -248,4 +248,3 @@ func (c *mcentral) grow() *mspan {
 	heapBitsForSpan(s.base()).initSpan(s)
 	return s
 }
-

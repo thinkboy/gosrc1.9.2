@@ -534,7 +534,7 @@ func nextFreeFast(s *mspan) gclinkptr {
 			}
 			s.allocCache >>= uint(theBit + 1)
 			s.freeindex = freeidx
-			v := gclinkptr(result*s.elemsize + s.base())
+			v := gclinkptr(result*s.elemsize + s.base()) // 计算空闲内存块指针地址
 			s.allocCount++
 			return v
 		}
@@ -552,14 +552,14 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 	s = c.alloc[spc]
 	shouldhelpgc = false
 	freeIndex := s.nextFreeIndex()
-	if freeIndex == s.nelems {
+	if freeIndex == s.nelems { // 如果span里的内存已经用完了,则重新填充
 		// The span is full.
 		if uintptr(s.allocCount) != s.nelems {
 			println("runtime: s.allocCount=", s.allocCount, "s.nelems=", s.nelems)
 			throw("s.allocCount != s.nelems && freeIndex == s.nelems")
 		}
 		systemstack(func() {
-			c.refill(spc)
+			c.refill(spc) // 更换一个空闲内存的span到mcache里
 		})
 		shouldhelpgc = true
 		s = c.alloc[spc]
@@ -571,7 +571,7 @@ func (c *mcache) nextFree(spc spanClass) (v gclinkptr, s *mspan, shouldhelpgc bo
 		throw("freeIndex is not valid")
 	}
 
-	v = gclinkptr(freeIndex*s.elemsize + s.base())
+	v = gclinkptr(freeIndex*s.elemsize + s.base()) // 计算空闲内存块指针地址
 	s.allocCount++
 	if uintptr(s.allocCount) > s.nelems {
 		println("s.allocCount=", s.allocCount, "s.nelems=", s.nelems)
@@ -684,7 +684,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			} else if size&1 == 0 {
 				off = round(off, 2)
 			}
-			// 如果有足够大小，则直接返回
+			// 如果tiny里面有足够大小，则直接返回
 			if off+size <= maxTinySize && c.tiny != 0 {
 				// The object fits into existing tiny block.
 				x = unsafe.Pointer(c.tiny + off)
@@ -695,10 +695,10 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 				return x
 			}
 			// Allocate a new maxTinySize block.
-			// 获取tinySpanClass=2的span,也就是16B的span
+			// 获取tinySpanClass=2的span,也就是16B内存块的span
 			span := c.alloc[tinySpanClass]
 			v := nextFreeFast(span)
-			if v == 0 {
+			if v == 0 { // 如果没有空闲span，则更换一个空闲内存的span到mcache里
 				v, _, shouldhelpgc = c.nextFree(tinySpanClass)
 			}
 			// 初始化tiny块
@@ -828,7 +828,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	return x
 }
 
-// 分配一个大对象
+// 直接从mheap_里分配一个大对象
 func largeAlloc(size uintptr, needzero bool, noscan bool) *mspan {
 	// print("largeAlloc size=", size, "\n")
 
