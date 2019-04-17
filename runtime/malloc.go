@@ -297,7 +297,7 @@ func mallocinit() {
 			default:
 				p = uintptr(i)<<40 | uintptrMask&(0x00c0<<32)
 			}
-			p = uintptr(sysReserve(unsafe.Pointer(p), pSize, &reserved))
+			p = uintptr(sysReserve(unsafe.Pointer(p), pSize, &reserved)) // 从系统mmap一整块内存，大小为bitmapSize + spansSize + arenaSize + _PageSize的和
 			if p != 0 {
 				break
 			}
@@ -366,8 +366,11 @@ func mallocinit() {
 	// PageSize can be larger than OS definition of page size,
 	// so SysReserve can give us a PageSize-unaligned pointer.
 	// To overcome this we ask for PageSize more and round up the pointer.
-	// 地址对齐并调整，os page size是4KB,而_PageSize==8KB
-	p1 := round(p, _PageSize)
+	// 内存结构大框如下：
+	// -----------------------------------
+	// | span区域 | bitmap区域 | arena区域 |
+	// -----------------------------------
+	p1 := round(p, _PageSize) // 地址对齐并调整，os page size是4KB,而_PageSize==8KB
 	pSize -= p1 - p
 
 	spansStart := p1
@@ -381,9 +384,9 @@ func mallocinit() {
 	} else {
 		mheap_.arena_start = p1 // 将mheap_.arena_start指向arena区域头部
 	}
-	mheap_.arena_end = p + pSize // 将mheap_.arena_start指向arena区域尾部
+	mheap_.arena_end = p + pSize // 将mheap_.arena_end指向arena区域尾部
 	mheap_.arena_used = p1       // 此时mheap_.arena_used指向arena区域头部
-	mheap_.arena_alloc = p1
+	mheap_.arena_alloc = p1      // 此时mheap_.arena_alloc指向arena区域头部
 	mheap_.arena_reserved = reserved
 
 	if mheap_.arena_start&(_PageSize-1) != 0 {
@@ -395,13 +398,15 @@ func mallocinit() {
 	// 初始化mheap堆内存
 	mheap_.init(spansStart, spansSize) // 依据spans区域初始化mheap大小
 	_g_ := getg()
-	_g_.m.mcache = allocmcache() // 给主G分配自己的内存cache
+	_g_.m.mcache = allocmcache() // 给主G所在M(即M0)分配自己的内存cache
 }
 
 // sysAlloc allocates the next n bytes from the heap arena. The
 // returned pointer is always _PageSize aligned and between
 // h.arena_start and h.arena_end. sysAlloc returns nil on failure.
 // There is no corresponding free function.
+// 从系统申请内存，这里要申请的参数n一定是pagesize的整数倍
+// 在该方法里才是操作arena区域的分配
 func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 	// strandLimit is the maximum number of bytes to strand from
 	// the current arena block. If we would need to strand more
@@ -472,8 +477,8 @@ func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 	// 不超出arena大小限制
 	if n <= h.arena_end-h.arena_alloc {
 		// Keep taking from our reservation.
-		p := h.arena_alloc
-		// 系统mmap分配内存
+		p := h.arena_alloc // 获取arena区域已分配的内存尾部地址，也是未分配内存的起始指针地址
+		// 系统mmap方法分配内存
 		sysMap(unsafe.Pointer(p), n, h.arena_reserved, &memstats.heap_sys)
 		h.arena_alloc += n
 		if h.arena_alloc > h.arena_used {

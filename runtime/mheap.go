@@ -474,6 +474,8 @@ func mlookup(v uintptr, base *uintptr, size *uintptr, sp **mspan) int32 {
 }
 
 // Initialize the heap.
+// 初始化mheap里的各种结构
+// 在这里是初始化的span区域，并没有把arean划分出多个span内存块，也并没有构建spanlist，只是做了一堆变量的默认值初始化
 func (h *mheap) init(spansStart, spansBytes uintptr) {
 	h.treapalloc.init(unsafe.Sizeof(treapNode{}), nil, nil, &memstats.other_sys)
 	h.spanalloc.init(unsafe.Sizeof(mspan{}), recordspan, unsafe.Pointer(h), &memstats.mspan_sys)
@@ -501,7 +503,7 @@ func (h *mheap) init(spansStart, spansBytes uintptr) {
 		h.central[i].mcentral.init(spanClass(i)) // 初始化mcentral
 	}
 
-	// 初始化h.spans数组大小,数组元素存放的是指针
+	// 初始化h.spans数组大小（数组元素存放的是指针）
 	sp := (*slice)(unsafe.Pointer(&h.spans))
 	sp.array = unsafe.Pointer(spansStart)
 	sp.len = 0
@@ -917,17 +919,19 @@ func (h *mheap) grow(npage uintptr) bool {
 
 	// Create a fake "in use" span and free it, so that the
 	// right coalescing happens.
-	// 创建span用来管理刚从系统申请的内存
+	// 创建span，用来管理刚从系统申请的内存。
+	// 同时也抽象的把arane区域与span区域做了个页映射
 	s := (*mspan)(h.spanalloc.alloc())
 	s.init(uintptr(v), ask>>_PageShift)
-	p := (s.base() - h.arena_start) >> _PageShift
-	for i := p; i < p+s.npages; i++ { // TODO 为啥这里把同一个s放到多个spans里，h.spans是怎么操作的?
+	p := (s.base() - h.arena_start) >> _PageShift // 计算出来当前分配的span内存属于arena区域的第p页
+	for i := p; i < p+s.npages; i++ {             // TODO 把第p页及p页以后的所有h.spans都指向该span?
 		h.spans[i] = s
 	}
 	atomic.Store(&s.sweepgen, h.sweepgen)
 	s.state = _MSpanInUse
 	h.pagesInUse += uint64(s.npages)
-	// 放到mheap相关空闲链表里
+	// 放到mheap.free或mheap.freelarge链表里
+	//
 	h.freeSpanLocked(s, false, true, 0)
 	return true
 }
