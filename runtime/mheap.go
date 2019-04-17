@@ -241,7 +241,7 @@ type mspan struct {
 	freeindex uintptr
 	// TODO: Look up nelems from sizeclass and remove this field if it
 	// helps performance.
-	nelems uintptr // number of object in the span.
+	nelems uintptr // span里的object的总数 //number of object in the span.
 
 	// Cache of the allocBits at freeindex. allocCache is shifted
 	// such that the lowest bit corresponds to the bit freeindex.
@@ -285,7 +285,7 @@ type mspan struct {
 	sweepgen    uint32
 	divMul      uint16     // for divide by elemsize - divMagic.mul
 	baseMask    uint16     // if non-0, elemsize is a power of 2, & this will get object allocation base
-	allocCount  uint16     // 被分配使用的对象数量 //number of allocated objects
+	allocCount  uint16     // 分配过的对象数量 //number of allocated objects
 	spanclass   spanClass  // size class and noscan (uint8)
 	incache     bool       // 被mcache使用标记
 	state       mSpanState // mspaninuse etc
@@ -295,7 +295,7 @@ type mspan struct {
 	elemsize    uintptr    // computed from sizeclass or from npages
 	unusedsince int64      // first time spotted by gc in mspanfree state
 	npreleased  uintptr    // number of pages released to the os
-	limit       uintptr    // end of data in span
+	limit       uintptr    // span的内存末尾指针 // end of data in span
 	speciallock mutex      // guards specials list
 	specials    *special   // linked list of special records sorted by offset.
 }
@@ -740,7 +740,7 @@ func (h *mheap) alloc(npage uintptr, spanclass spanClass, large bool, needzero b
 		s = h.alloc_m(npage, spanclass, large)
 	})
 
-	// TODO s.needzero变量的解释是:在分配之前需要把span清0  why?
+	// TODO s.needzero变量的解释是:在分配之前需要把span清0，内存块初始化是在这里做的？
 	if s != nil {
 		if needzero && s.needzero != 0 {
 			memclrNoHeapPointers(unsafe.Pointer(s.base()), s.npages<<_PageShift)
@@ -789,13 +789,15 @@ func (h *mheap) allocManual(npage uintptr, stat *uint64) *mspan {
 // Allocates a span of the given size.  h must be locked.
 // The returned span has been removed from the
 // free list, but its state is still MSpanFree.
-// 分配指定规格page size的Span,调用此函数时mheap一定被锁了
+// 分配指定page size的Span
+// 调用此函数时mheap一定被锁了
 func (h *mheap) allocSpanLocked(npage uintptr, stat *uint64) *mspan {
 	var list *mSpanList
 	var s *mspan
 
 	// Try in fixed-size lists up to max.
-	// 先尝试从h.free获取指定规格page size的Span，不行再从规格更大的找空闲Span
+	// 先尝试从h.free获取指定npage的Span
+	// 指定npage里没有span的话，就从更大npage的spanlist里获取
 	for i := int(npage); i < len(h.free); i++ {
 		list = &h.free[i]
 		if !list.isEmpty() {
@@ -805,7 +807,7 @@ func (h *mheap) allocSpanLocked(npage uintptr, stat *uint64) *mspan {
 		}
 	}
 	// Best fit in list of large spans.
-	// 再不行，就试页数超过128的超大span
+	// h.free没有的话，就试页数超过128的超大span
 	s = h.allocLarge(npage) // allocLarge removed s from h.freelarge for us
 	// 还没有就得从系统申请了
 	if s == nil {
@@ -833,6 +835,7 @@ HaveSpan:
 	}
 
 	// 如果该span多余预期,则创建新的span管理多余的page,放到heap里
+	// 如果是从系统分配出来的mspan永远是128 page大小的，所以当大于需要的npage数量的时候在这里拆出来两个mspan
 	if s.npages > npage {
 		// Trim extra and put it back in the heap.
 		t := (*mspan)(h.spanalloc.alloc())
@@ -895,7 +898,7 @@ func (h *mheap) grow(npage uintptr) bool {
 	// Allocate a multiple of 64kB.
 	// 大小总是按64KB的倍数分配,最小1MB
 	npage = round(npage, (64<<10)/_PageSize) // 按64KB补齐页数
-	ask := npage << _PageShift
+	ask := npage << _PageShift               // 计算npage页数的内存大小
 	if ask < _HeapAllocChunk {
 		ask = _HeapAllocChunk
 	}
@@ -914,17 +917,17 @@ func (h *mheap) grow(npage uintptr) bool {
 
 	// Create a fake "in use" span and free it, so that the
 	// right coalescing happens.
-	// 创建span用来管理刚申请的内存
+	// 创建span用来管理刚从系统申请的内存
 	s := (*mspan)(h.spanalloc.alloc())
 	s.init(uintptr(v), ask>>_PageShift)
 	p := (s.base() - h.arena_start) >> _PageShift
-	for i := p; i < p+s.npages; i++ { // TODO 为啥这里把同一个s放到多个spans里，spans是怎么操作的?
+	for i := p; i < p+s.npages; i++ { // TODO 为啥这里把同一个s放到多个spans里，h.spans是怎么操作的?
 		h.spans[i] = s
 	}
 	atomic.Store(&s.sweepgen, h.sweepgen)
 	s.state = _MSpanInUse
 	h.pagesInUse += uint64(s.npages)
-	// 放到heap相关空闲链表里
+	// 放到mheap相关空闲链表里
 	h.freeSpanLocked(s, false, true, 0)
 	return true
 }
@@ -1711,4 +1714,3 @@ func newArenaMayUnlock() *gcBitsArena {
 	}
 	return result
 }
-

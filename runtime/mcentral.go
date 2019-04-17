@@ -21,12 +21,12 @@ type mcentral struct {
 	lock      mutex
 	spanclass spanClass //
 	nonempty  mSpanList // 有空闲object的span列表 //list of spans with a free object, ie a nonempty free list
-	empty     mSpanList // 没有空闲object的span列表(或者被cache到mcache里的) //list of spans with no free objects (or cached in an mcache)
+	empty     mSpanList // 没有空闲object的span列表(被cache到mcache里的) //list of spans with no free objects (or cached in an mcache)
 
 	// nmalloc is the cumulative count of objects allocated from
 	// this mcentral, assuming all spans in mcaches are
 	// fully-allocated. Written atomically, read under STW.
-	nmalloc uint64
+	nmalloc uint64 // 历史分配过的对象数量
 }
 
 // Initialize a single central free list.
@@ -37,6 +37,7 @@ func (c *mcentral) init(spc spanClass) {
 }
 
 // Allocate a span to use in an MCache.
+// 分配一个span给mcache使用
 func (c *mcentral) cacheSpan() *mspan {
 	// Deduct credit for this span allocation and sweep if necessary.
 	spanBytes := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) * _PageSize
@@ -72,11 +73,9 @@ retry:
 		goto havespan
 	}
 	// 尝试从emply列表里清理出一个可用的span
-	// 可以看出从central里获取span时,优先取用已有资源,哪怕从没有空闲object列表里清理出来一个。
 	for s = c.empty.first; s != nil; s = s.next {
 		// 需要清理的span
-		// TODO 不会把mcache里的span也拿到？
-		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) {
+		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) { // TODO 不会把mcache里的span也拿到？这里似乎是待gc清理的判断
 			// we have an empty span that requires sweeping,
 			// sweep it and see if we can free some space in it
 			c.empty.remove(s)
@@ -231,10 +230,12 @@ func (c *mcentral) freeSpan(s *mspan, preserve bool, wasempty bool) bool {
 }
 
 // grow allocates a new empty span from the heap and initializes it for c's size class.
+// 内存增长
+// 从这里开始转换为page(也就是页)的概念进行内存分配，是因为mheap是对应系统的内存管理的，系统内存管理是通过分页管理的
 func (c *mcentral) grow() *mspan {
-	npages := uintptr(class_to_allocnpages[c.spanclass.sizeclass()])
-	size := uintptr(class_to_size[c.spanclass.sizeclass()])
-	n := (npages << _PageShift) / size
+	npages := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) // 内存页数
+	size := uintptr(class_to_size[c.spanclass.sizeclass()])          // 每个对象的大小
+	n := (npages << _PageShift) / size                               // 对象数量
 
 	// 从mheap里分配一个span
 	s := mheap_.alloc(npages, c.spanclass, false, true)

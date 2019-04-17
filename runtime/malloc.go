@@ -418,6 +418,7 @@ func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 			// TODO: It would be bad if part of the arena
 			// is reserved and part is not.
 			var reserved bool
+			// sysReserve通过mmap系统方法分配内存
 			p := uintptr(sysReserve(unsafe.Pointer(h.arena_end), p_size, &reserved))
 			if p == 0 {
 				// TODO: Try smaller reservation
@@ -472,6 +473,7 @@ func (h *mheap) sysAlloc(n uintptr) unsafe.Pointer {
 	if n <= h.arena_end-h.arena_alloc {
 		// Keep taking from our reservation.
 		p := h.arena_alloc
+		// 系统mmap分配内存
 		sysMap(unsafe.Pointer(p), n, h.arena_reserved, &memstats.heap_sys)
 		h.arena_alloc += n
 		if h.arena_alloc > h.arena_used {
@@ -523,6 +525,8 @@ var zerobase uintptr
 
 // nextFreeFast returns the next free object if one is quickly available.
 // Otherwise it returns 0.
+// 在mspan里面获取下一个空闲内存对象的地址
+// span是一块连续的大内存，获取方式是通过移动内存指针地址
 func nextFreeFast(s *mspan) gclinkptr {
 	theBit := sys.Ctz64(s.allocCache) // Is there a free object in the allocCache?
 	if theBit < 64 {
@@ -727,7 +731,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			span := c.alloc[spc]
 			v := nextFreeFast(span)
 			if v == 0 {
-				v, span, shouldhelpgc = c.nextFree(spc)
+				v, span, shouldhelpgc = c.nextFree(spc) // 如果没有空闲span，则更换一个空闲内存的span到mcache里
 			}
 			x = unsafe.Pointer(v)
 			if needzero && span.needzero != 0 {
