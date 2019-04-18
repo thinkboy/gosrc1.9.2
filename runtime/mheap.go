@@ -36,7 +36,7 @@ type mheap struct {
 	busy      [_MaxMHeapList]mSpanList // busy lists of large spans of given length
 	busylarge mSpanList                // busy lists of large spans length >= _MaxMHeapList
 	sweepgen  uint32                   // sweep generation, see comment in mspan
-	sweepdone uint32                   // all spans are swept
+	sweepdone uint32                   // 所有span被清理完的标记，1为完成 0为开始sweep // all spans are swept
 	sweepers  uint32                   // number of active sweepone calls
 
 	// allspans is a slice of all mspans ever created. Each mspan
@@ -145,6 +145,8 @@ type mheap struct {
 	// spaced CacheLineSize bytes apart, so that each MCentral.lock
 	// gets its own cache line.
 	// central is indexed by spanClass.
+	// 存储空闲的小对象(<=32KB)链表
+	// 不同的spanclass各自有一个链表
 	central [numSpanClasses]struct {
 		mcentral mcentral
 		pad      [sys.CacheLineSize - unsafe.Sizeof(mcentral{})%sys.CacheLineSize]byte
@@ -214,8 +216,8 @@ type mSpanList struct {
 
 //go:notinheap
 type mspan struct {
-	next *mspan     // next span in list, or nil if none
-	prev *mspan     // previous span in list, or nil if none
+	next *mspan     // 用于mSpanList的前后指针 // next span in list, or nil if none
+	prev *mspan     // 用于mSpanList的前后指针 // previous span in list, or nil if none
 	list *mSpanList // For debugging. TODO: Remove.
 
 	startAddr uintptr // address of first byte of span aka s.base()
@@ -964,6 +966,7 @@ func (h *mheap) lookupMaybe(v unsafe.Pointer) *mspan {
 }
 
 // Free the span back into the heap.
+// 把span返回给heap
 func (h *mheap) freeSpan(s *mspan, acct int32) {
 	systemstack(func() {
 		mp := getg().m
@@ -1011,6 +1014,7 @@ func (h *mheap) freeManual(s *mspan, stat *uint64) {
 }
 
 // s must be on a busy list (h.busy or h.busylarge) or unlinked.
+// 把span返回给heap
 func (h *mheap) freeSpanLocked(s *mspan, acctinuse, acctidle bool, unusedsince int64) {
 	switch s.state {
 	case _MSpanManual:

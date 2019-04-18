@@ -211,6 +211,7 @@ func readgogc() int32 {
 // gcenable is called after the bulk of the runtime initialization,
 // just before we're about to start letting user code run.
 // It kicks off the background sweeper goroutine and enables GC.
+// 启动所有垃圾回收器后台操作
 func gcenable() {
 	c := make(chan int, 1)
 	go bgsweep(c)
@@ -1011,7 +1012,7 @@ var work struct {
 	tSweepTerm, tMark, tMarkTerm, tEnd int64 // nanotime() of phase start
 
 	pauseNS    int64 // total STW time this cycle
-	pauseStart int64 // nanotime() of last STW
+	pauseStart int64 // nanotime() of last STW // 计算pauseNS字段的辅助字段，每次sweep之前都记录下开始时间
 
 	// debug.gctrace heap sizes for this cycle.
 	heap0, heap1, heap2, heapGoal uint64
@@ -1228,6 +1229,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 	}
 
 	// For stats, check if this GC was forced by the user.
+	// 标记是否强制GC
 	work.userForced = trigger.kind == gcTriggerAlways || trigger.kind == gcTriggerCycle
 
 	// In gcstoptheworld debug mode, upgrade the mode accordingly.
@@ -1276,8 +1278,8 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 
 	work.cycles++
 	if mode == gcBackgroundMode { // Do as much work concurrently as possible
-		gcController.startCycle() // 新一轮gc开始前，初始化各种状态字段和计算变量
-		work.heapGoal = memstats.next_gc
+		gcController.startCycle()        // 新一轮gc开始前，初始化各种状态字段和计算变量
+		work.heapGoal = memstats.next_gc // 记录本次目标gc的堆大小(在gcController.startCycle()里通过gc_trigger计算得到) TODO:为什么目标gc的堆大小大于实际当前存活堆？
 
 		// Enter concurrent mark phase and enable
 		// write barriers.
@@ -1321,8 +1323,8 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		// Concurrent mark.
 		systemstack(startTheWorldWithSema)
 		now = nanotime()
-		work.pauseNS += now - work.pauseStart // pauseNS为真正STW时长，这里累加的是sweep截断STW的耗时
-		work.tMark = now                      // 记录gc标记阶段的开始时间
+		work.pauseNS += now - work.pauseStart // pauseNS为真正STW时长，这里累加的是sweep阶段STW的耗时
+		work.tMark = now                      // 记录gc mark阶段的开始时间
 	} else {
 		t := nanotime()
 		work.tMark, work.tMarkTerm = t, t
@@ -1489,7 +1491,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	})
 
 	systemstack(func() {
-		work.heap2 = work.bytesMarked
+		work.heap2 = work.bytesMarked // 清理前记录下marked的堆大小,即存活的堆大小
 		if debug.gccheckmark > 0 {
 			// Run a full stop-the-world mark using checkmark bits,
 			// to check that we didn't forget to mark anything during
@@ -1502,7 +1504,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 
 		// marking is complete so we can turn the write barrier off
 		setGCPhase(_GCoff)
-		gcSweep(work.mode)
+		gcSweep(work.mode) // 最终进行sweep清理
 
 		if debug.gctrace > 1 {
 			startTime = nanotime()
@@ -1543,7 +1545,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	now := nanotime()
 	sec, nsec, _ := time_now()
 	unixNow := sec*1e9 + int64(nsec)
-	work.pauseNS += now - work.pauseStart
+	work.pauseNS += now - work.pauseStart // 再次累加sweep阶段的耗时，也是STW的耗时
 	work.tEnd = now
 	atomic.Store64(&memstats.last_gc_unix, uint64(unixNow)) // must be Unix time to make sense to user
 	atomic.Store64(&memstats.last_gc_nanotime, uint64(now)) // monotonic time for us
@@ -1568,7 +1570,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	sweep.nbgsweep = 0
 	sweep.npausesweep = 0
 
-	if work.userForced {
+	if work.userForced { // 如果是进行的强制GC，则记录一次强制GC次数
 		memstats.numforcedgc++
 	}
 
@@ -1850,6 +1852,7 @@ func gcBgMarkWorker(_p_ *p) {
 
 		// If this worker reached a background mark completion
 		// point, signal the main GC goroutine.
+		// 如果本次worker已经是最后一个完成的则进入MarkDone()
 		if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
 			// Make this G preemptible and disassociate it
 			// as the worker for this P so
@@ -2006,7 +2009,7 @@ func gcSweep(mode gcMode) {
 
 	lock(&mheap_.lock)
 	mheap_.sweepgen += 2
-	mheap_.sweepdone = 0
+	mheap_.sweepdone = 0 // 标记sweep开始
 	if mheap_.sweepSpans[mheap_.sweepgen/2%2].index != 0 {
 		// We should have drained this list during the last
 		// sweep phase. We certainly need to start this phase
@@ -2023,7 +2026,7 @@ func gcSweep(mode gcMode) {
 		mheap_.sweepPagesPerByte = 0
 		unlock(&mheap_.lock)
 		// Sweep all spans eagerly.
-		for sweepone() != ^uintptr(0) {
+		for sweepone() != ^uintptr(0) { // 强制gc模式下，直接进行清理所有的span操作，不需要等待唤醒后台清理任务
 			sweep.npausesweep++
 		}
 		// Free workbufs eagerly.
@@ -2042,7 +2045,7 @@ func gcSweep(mode gcMode) {
 	lock(&sweep.lock)
 	if sweep.parked {
 		sweep.parked = false
-		ready(sweep.g, 0, true)
+		ready(sweep.g, 0, true) // 唤醒bgsweep，开始清理操作
 	}
 	unlock(&sweep.lock)
 }
@@ -2193,4 +2196,3 @@ func fmtNSAsMS(buf []byte, ns uint64) []byte {
 	}
 	return itoaDiv(buf, x, dec)
 }
-

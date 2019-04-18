@@ -418,8 +418,8 @@ type m struct {
 	park          note
 	alllink       *m // on allm
 	schedlink     muintptr
-	mcache        *mcache
-	lockedg       *g          // 记录当前M 锁定了哪个G
+	mcache        *mcache     // mcache是指向的P的mcache，当M和P进行绑定的时候动态指向的
+	lockedg       *g          // 记录当前M，锁定在了哪个G
 	createstack   [32]uintptr // stack that created this thread.
 	freglo        [16]uint32  // d[i] lsb and f[i]
 	freghi        [16]uint32  // d[i] msb and f[i+16]

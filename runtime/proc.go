@@ -262,6 +262,7 @@ func forcegchelper() {
 
 // Gosched yields the processor, allowing other goroutines to run. It does not
 // suspend the current goroutine, so execution resumes automatically.
+// 终止G运行让出M，从而让出CPU
 //go:nosplit
 func Gosched() {
 	mcall(gosched_m)
@@ -2417,7 +2418,7 @@ func goschedImpl(gp *g) {
 }
 
 // Gosched continuation on g0.
-// Gosched方法由用户可以控制终止G让出M
+// 只有Gosched方法调用，终止G运行让出M，从而让出CPU
 func gosched_m(gp *g) {
 	if trace.enabled {
 		traceGoSched()
@@ -3791,6 +3792,7 @@ func procresize(nprocs int32) *p {
 //
 // This function is allowed to have write barriers even if the caller
 // isn't because it immediately acquires _p_.
+// 绑定M和P
 //
 //go:yeswritebarrierrec
 func acquirep(_p_ *p) {
@@ -3799,7 +3801,7 @@ func acquirep(_p_ *p) {
 
 	// have p; write barriers now allowed
 	_g_ := getg()
-	_g_.m.mcache = _p_.mcache
+	_g_.m.mcache = _p_.mcache // 绑定M和P的时候把当前M的mcache指向P，说明M的内存是利用的当前P的mcache，并且是动态配置的
 
 	if trace.enabled {
 		traceProcStart()
@@ -3809,6 +3811,7 @@ func acquirep(_p_ *p) {
 // acquirep1 is the first step of acquirep, which actually acquires
 // _p_. This is broken out so we can disallow write barriers for this
 // part, since we don't yet have a P.
+// 绑定M和P
 //
 //go:nowritebarrierrec
 func acquirep1(_p_ *p) {

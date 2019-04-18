@@ -19,7 +19,7 @@ import "runtime/internal/atomic"
 //go:notinheap
 type mcentral struct {
 	lock      mutex
-	spanclass spanClass //
+	spanclass spanClass // 当前mcentral的spanclass
 	nonempty  mSpanList // 有空闲object的span列表 //list of spans with a free object, ie a nonempty free list
 	empty     mSpanList // 没有空闲object的span列表(被cache到mcache里的) //list of spans with no free objects (or cached in an mcache)
 
@@ -244,7 +244,7 @@ func (c *mcentral) grow() *mspan {
 	}
 
 	p := s.base()
-	s.limit = p + size*n
+	s.limit = p + size*n // 设置span的limit指针指向内存区域的末尾
 
 	heapBitsForSpan(s.base()).initSpan(s)
 	return s
