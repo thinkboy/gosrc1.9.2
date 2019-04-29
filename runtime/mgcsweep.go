@@ -44,7 +44,7 @@ func finishsweep_m() {
 }
 
 // 后台清理任务
-// 清理完成后则gopark，不在执行，等待扫描任务到终止阶段唤醒该任务
+// 清理完成后则gopark挂起G，等待扫描任务到终止阶段唤醒该后台任务
 func bgsweep(c chan int) {
 	sweep.g = getg()
 
@@ -97,7 +97,7 @@ func sweepone() uintptr {
 	npages := ^uintptr(0)
 	sg := mheap_.sweepgen
 	for {
-		s := mheap_.sweepSpans[1-sg/2%2].pop()
+		s := mheap_.sweepSpans[1-sg/2%2].pop() // 从未清扫列表里弹出一个span
 		if s == nil {
 			atomic.Store(&mheap_.sweepdone, 1) // 标记sweep结束
 			break
@@ -112,6 +112,7 @@ func sweepone() uintptr {
 			}
 			continue
 		}
+		// 只有sweepgen==sg-2时，即处于待清扫状态时才可以跳过这里的continue执行下面的清扫操作。并且切换状态为sweepgen==sg-1,即切换为正在清扫状态
 		if s.sweepgen != sg-2 || !atomic.Cas(&s.sweepgen, sg-2, sg-1) {
 			continue
 		}
@@ -184,6 +185,8 @@ func (s *mspan) ensureSwept() {
 // If preserve=true, don't return it to heap nor relink in MCentral lists;
 // caller takes care of it.
 //TODO go:nowritebarrier
+// 清理mspan自身，返还给mheap里的heap或者mcentral
+// 如果preserve=true,将不或返还给heap或者mcentral，就只是做清理及初始化操作
 func (s *mspan) sweep(preserve bool) bool {
 	// It's critical that we enter this function with preemption disabled,
 	// GC must not start while we are in the middle of this function.
@@ -300,7 +303,7 @@ func (s *mspan) sweep(preserve bool) bool {
 		s.needzero = 1
 		freeToHeap = true
 	}
-	nfreed := s.allocCount - nalloc
+	nfreed := s.allocCount - nalloc // 计算空闲的object数量
 	if nalloc > s.allocCount {
 		print("runtime: nelems=", s.nelems, " nalloc=", nalloc, " previous allocCount=", s.allocCount, " nfreed=", nfreed, "\n")
 		throw("sweep increased allocation count")
@@ -308,18 +311,20 @@ func (s *mspan) sweep(preserve bool) bool {
 
 	s.allocCount = nalloc
 	wasempty := s.nextFreeIndex() == s.nelems
-	s.freeindex = 0 // reset allocation index to start of span.
+	s.freeindex = 0 // 重置freeindex到span的开始位置 // reset allocation index to start of span.
 	if trace.enabled {
 		getg().m.p.ptr().traceReclaimed += uintptr(nfreed) * s.elemsize
 	}
 
 	// gcmarkBits becomes the allocBits.
 	// get a fresh cleared gcmarkBits in preparation for next GC
+	// gcmarkBits变成allocBits.
+	// 获取一个新的gcmarkBits用于下一次GC
 	s.allocBits = s.gcmarkBits
 	s.gcmarkBits = newMarkBits(s.nelems)
 
 	// Initialize alloc bits cache.
-	s.refillAllocCache(0)
+	s.refillAllocCache(0) // 初始化重置s.allocCache
 
 	// We need to set s.sweepgen = h.sweepgen only when all blocks are swept,
 	// because of the potential for a concurrent free/SetFinalizer.
@@ -340,10 +345,10 @@ func (s *mspan) sweep(preserve bool) bool {
 	}
 
 	if nfreed > 0 && spc.sizeclass() != 0 {
-		c.local_nsmallfree[spc.sizeclass()] += uintptr(nfreed)
-		res = mheap_.central[spc].mcentral.freeSpan(s, preserve, wasempty)
+		c.local_nsmallfree[spc.sizeclass()] += uintptr(nfreed)             // 记录空闲object的数量
+		res = mheap_.central[spc].mcentral.freeSpan(s, preserve, wasempty) // 释放span给mcentral或者mheap
 		// MCentral_FreeSpan updates sweepgen
-	} else if freeToHeap {
+	} else if freeToHeap { // 如果是大对象,则直接返还给mheap
 		// Free large span to heap
 
 		// NOTE(rsc,dvyukov): The original implementation of efence
@@ -370,10 +375,10 @@ func (s *mspan) sweep(preserve bool) bool {
 		c.local_largefree += size
 		res = true
 	}
-	if !res {
+	if !res { // res==true表示span返还给mheap了
 		// The span has been swept and is still in-use, so put
 		// it on the swept in-use list.
-		mheap_.sweepSpans[sweepgen/2%2].push(s)
+		mheap_.sweepSpans[sweepgen/2%2].push(s) // span被sweep后如果还是处于in-use状态，那么把他放到清扫过的sweepSpans链表里
 	}
 	return res
 }

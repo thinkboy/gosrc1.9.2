@@ -21,7 +21,7 @@ type mcentral struct {
 	lock      mutex
 	spanclass spanClass // 当前mcentral的spanclass
 	nonempty  mSpanList // 有空闲object的span列表 //list of spans with a free object, ie a nonempty free list
-	empty     mSpanList // 没有空闲object的span列表(被cache到mcache里的) //list of spans with no free objects (or cached in an mcache)
+	empty     mSpanList // 没有空闲object在mcache中使用的span列表 //list of spans with no free objects (or cached in an mcache)
 
 	// nmalloc is the cumulative count of objects allocated from
 	// this mcentral, assuming all spans in mcaches are
@@ -58,7 +58,7 @@ retry:
 			c.nonempty.remove(s)
 			c.empty.insertBack(s)
 			unlock(&c.lock)
-			s.sweep(true)
+			s.sweep(true) // 只初始化span
 			goto havespan
 		}
 		// 忽略正在清理的span
@@ -82,7 +82,7 @@ retry:
 			// swept spans are at the end of the list
 			c.empty.insertBack(s)
 			unlock(&c.lock)
-			s.sweep(true)
+			s.sweep(true) // 只初始化span
 			freeIndex := s.nextFreeIndex()
 			if freeIndex != s.nelems {
 				s.freeindex = freeIndex
@@ -164,8 +164,8 @@ func (c *mcentral) uncacheSpan(s *mspan) {
 		throw("uncaching span but s.allocCount == 0")
 	}
 
-	cap := int32((s.npages << _PageShift) / s.elemsize)
-	n := cap - int32(s.allocCount)
+	cap := int32((s.npages << _PageShift) / s.elemsize) // 计算span的最大object数量
+	n := cap - int32(s.allocCount)                      // 计算未分配出去的object数量
 	if n > 0 {
 		c.empty.remove(s)
 		c.nonempty.insert(s)
@@ -188,6 +188,7 @@ func (c *mcentral) uncacheSpan(s *mspan) {
 // freeSpan returns true if s was returned to the heap.
 // If preserve=true, it does not move s (the caller
 // must take care of it).
+// 如果返还给heap则方法返回true
 func (c *mcentral) freeSpan(s *mspan, preserve bool, wasempty bool) bool {
 	if s.incache {
 		throw("freeSpan given cached span")
@@ -216,22 +217,23 @@ func (c *mcentral) freeSpan(s *mspan, preserve bool, wasempty bool) bool {
 	// the span may be used in an MCache, so it must come after the
 	// linked list operations above (actually, just after the
 	// lock of c above.)
-	atomic.Store(&s.sweepgen, mheap_.sweepgen)
+	atomic.Store(&s.sweepgen, mheap_.sweepgen) // 标记span的清扫状态为已清扫完毕，可用于再分配
 
-	if s.allocCount != 0 {
+	if s.allocCount != 0 { // 如果span分配过内存则return false表示不需要返回给heap
 		unlock(&c.lock)
 		return false
 	}
 
-	c.nonempty.remove(s)
+	c.nonempty.remove(s) // 如果从未分配过内存，则返还给heap
 	unlock(&c.lock)
 	mheap_.freeSpan(s, 0)
 	return true
 }
 
 // grow allocates a new empty span from the heap and initializes it for c's size class.
-// 内存增长
-// 从这里开始转换为page(也就是页)的概念进行内存分配，是因为mheap是对应系统的内存管理的，系统内存管理是通过分页管理的
+// 内存按页增长
+// 从这里开始转换为page(也就是页的概念)进行内存分配，是因为mheap是对应系统的内存管理的，系统内存管理是通过分页管理的
+// 分配的npages的span的内存大小大于n倍的单个对象的大小(n的范围从个位数到十位数不等)
 func (c *mcentral) grow() *mspan {
 	npages := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) // 内存页数
 	size := uintptr(class_to_size[c.spanclass.sizeclass()])          // 每个对象的大小

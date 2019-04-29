@@ -37,7 +37,7 @@ type mheap struct {
 	busylarge mSpanList                // busy lists of large spans length >= _MaxMHeapList
 	sweepgen  uint32                   // sweep generation, see comment in mspan
 	sweepdone uint32                   // 所有span被清理完的标记，1为完成 0为开始sweep // all spans are swept
-	sweepers  uint32                   // number of active sweepone calls
+	sweepers  uint32                   // 活跃的sweepers的数量 // number of active sweepone calls
 
 	// allspans is a slice of all mspans ever created. Each mspan
 	// appears exactly once.
@@ -72,6 +72,10 @@ type mheap struct {
 	// unswept stack and pushes spans that are still in-use on the
 	// swept stack. Likewise, allocating an in-use span pushes it
 	// on the swept stack.
+	// sweepSpans包含2个mspan：一个清理过的正在使用的span，一个是未清理过的正在使用的span。
+	// 这两个span在每一次gc循环中交换.因此每次sweepgen都会加2.
+	// 清扫过的span在sweepSpans[sweepgen/2%2]里，未清扫过的span在sweepSpans[1-sweepgen/2%2]
+	// sweep操作就是从未清扫sweepSpans里pop出来，然后push给清扫过的sweepSpans里
 	sweepSpans [2]gcSweepBuf
 
 	_ uint32 // align uint64 fields on 32-bit for atomics
@@ -95,7 +99,7 @@ type mheap struct {
 	// the slope, it would create a discontinuity in debt if any
 	// progress has already been made.
 	pagesInUse         uint64  // pages of spans in stats _MSpanInUse; R/W with mheap.lock
-	pagesSwept         uint64  // pages swept this cycle; updated atomically
+	pagesSwept         uint64  // 本次gc周期sweep过的页数 // pages swept this cycle; updated atomically
 	pagesSweptBasis    uint64  // pagesSwept to use as the origin of the sweep ratio; updated atomically
 	sweepHeapLiveBasis uint64  // value of heap_live to use as the origin of sweep ratio; written with lock, read without
 	sweepPagesPerByte  float64 // proportional sweep ratio; written with lock, read without
@@ -221,7 +225,7 @@ type mspan struct {
 	list *mSpanList // For debugging. TODO: Remove.
 
 	startAddr uintptr // address of first byte of span aka s.base()
-	npages    uintptr // number of pages in span
+	npages    uintptr // 该span里的内存页数规格 // number of pages in span
 
 	manualFreeList gclinkptr // list of free objects in _MSpanManual spans
 
@@ -240,6 +244,14 @@ type mspan struct {
 	// undefined and should never be referenced.
 	//
 	// Object n starts at address n*elemsize + (start << pageShift).
+
+	// freeindex是0和nelems之间的slot索引，在该索引处开始扫描此span中的下一个free object。
+	// 每次分配从freeindex开始扫描allocBits，直到遇到指示空闲对象的0。然后调整freeindex，以便后续扫描仅从最新找到的free object开始。
+	// 如果freeindex == nelem,表示span没有free objects了
+	// 在span里allocBits是objects的bitmap(位图)
+	// 如果n >= freeindex并且allocBits[n/8] & (1<<(n%8))为0，那么对象n是空闲的;
+	// 否则,对象n被分配。从nelem开始的位是未定义的，不应该被引用。
+	// 对象n从地址n*elemsize+(start << pageShift)开始。
 	freeindex uintptr
 	// TODO: Look up nelems from sizeclass and remove this field if it
 	// helps performance.
@@ -251,6 +263,12 @@ type mspan struct {
 	// ctz (count trailing zero) to use it directly.
 	// allocCache may contain bits beyond s.nelems; the caller must ignore
 	// these.
+	// allocCache是allocBits的一段(所有叫cache)
+	// allocCache 肯能包含的bit数量超过s.nelems，调用者无视就好。
+	// allocCache按位来使用，每一位为0代表已经有一个对象被使用，每使用一个对象就allocCache>>1
+	// allocCache初始化值为二进制: 11111111 11111111 11111111 11111111 11111111 11111111 11111111 11111111
+	// 当使用一个对象后的二进制:    01111111 11111111 11111111 11111111 11111111 11111111 11111111 11111111
+	// 当再使用一个对象后的二进制:  00111111 11111111 11111111 11111111 11111111 11111111 11111111 11111111
 	allocCache uint64
 
 	// allocBits and gcmarkBits hold pointers to a span's mark and
@@ -287,14 +305,14 @@ type mspan struct {
 	sweepgen    uint32
 	divMul      uint16     // for divide by elemsize - divMagic.mul
 	baseMask    uint16     // if non-0, elemsize is a power of 2, & this will get object allocation base
-	allocCount  uint16     // 分配过的对象数量 //number of allocated objects
+	allocCount  uint16     // 当前分配的对象数量 //number of allocated objects
 	spanclass   spanClass  // size class and noscan (uint8)
 	incache     bool       // 被mcache使用标记
 	state       mSpanState // mspaninuse etc
 	needzero    uint8      // needs to be zeroed before allocation
 	divShift    uint8      // for divide by elemsize - divMagic.shift
 	divShift2   uint8      // for divide by elemsize - divMagic.shift2
-	elemsize    uintptr    // computed from sizeclass or from npages
+	elemsize    uintptr    // 该span下的object的字节大小(不同sizeclass有不同的大小) // computed from sizeclass or from npages
 	unusedsince int64      // first time spotted by gc in mspanfree state
 	npreleased  uintptr    // number of pages released to the os
 	limit       uintptr    // span的内存末尾指针 // end of data in span
@@ -676,7 +694,7 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 		// Record span info, because gc needs to be
 		// able to map interior pointer to containing span.
 		atomic.Store(&s.sweepgen, h.sweepgen)
-		h.sweepSpans[h.sweepgen/2%2].push(s) // Add to swept in-use list.
+		h.sweepSpans[h.sweepgen/2%2].push(s) // 添加到清扫过的链表里，待gc mark时找到 // Add to swept in-use list.
 		s.state = _MSpanInUse
 		s.allocCount = 0
 		s.spanclass = spanclass
@@ -687,7 +705,7 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 			s.divShift2 = 0
 			s.baseMask = 0
 		} else {
-			s.elemsize = uintptr(class_to_size[sizeclass])
+			s.elemsize = uintptr(class_to_size[sizeclass]) // 计算小对象大小
 			m := &class_to_divmagic[sizeclass]
 			s.divShift = m.shift
 			s.divMul = m.mul
@@ -839,7 +857,7 @@ HaveSpan:
 	}
 
 	// 如果该span多余预期,则创建新的span管理多余的page,放到heap里
-	// 如果是从系统分配出来的mspan永远是128 page大小的，所以当大于需要的npage数量的时候在这里拆出来两个mspan
+	// 如果是从系统分配出来的mspan，那一定是大于128 page大小的，所以当大于需要的npage数量的时候在这里拆出来两个mspan，一个用于分配出去，一个返还给mheap
 	if s.npages > npage {
 		// Trim extra and put it back in the heap.
 		t := (*mspan)(h.spanalloc.alloc())
@@ -903,7 +921,7 @@ func (h *mheap) grow(npage uintptr) bool {
 	// 大小总是按64KB的倍数分配,最小1MB
 	npage = round(npage, (64<<10)/_PageSize) // 按64KB补齐页数
 	ask := npage << _PageShift               // 计算npage页数的内存大小
-	if ask < _HeapAllocChunk {
+	if ask < _HeapAllocChunk {               // 不能小于1MB内存
 		ask = _HeapAllocChunk
 	}
 	// 向操作系统申请内存
@@ -1014,7 +1032,7 @@ func (h *mheap) freeManual(s *mspan, stat *uint64) {
 }
 
 // s must be on a busy list (h.busy or h.busylarge) or unlinked.
-// 把span返回给heap
+// 把span返回给mheap
 func (h *mheap) freeSpanLocked(s *mspan, acctinuse, acctidle bool, unusedsince int64) {
 	switch s.state {
 	case _MSpanManual:

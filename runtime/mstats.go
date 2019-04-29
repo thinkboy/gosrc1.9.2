@@ -38,9 +38,9 @@ type mstats struct {
 	heap_alloc    uint64 // bytes allocated and not yet freed (same as alloc above)
 	heap_sys      uint64 // virtual address space obtained from system for GC'd heap
 	heap_idle     uint64 // mheap中空闲的字节大小 //bytes in idle spans
-	heap_inuse    uint64 // mheap中正在使用的字节大小 // bytes in _MSpanInUse spans
+	heap_inuse    uint64 // 当前从mheap里分配出去的字节数 // bytes in _MSpanInUse spans
 	heap_released uint64 // bytes released to the os
-	heap_objects  uint64 // total number of allocated objects
+	heap_objects  uint64 // 当前从mheap里分配出去的对象数量 //total number of allocated objects
 
 	// TODO(austin): heap_released is both useless and inaccurate
 	// in its current form. It's useless because, from the user's
@@ -456,7 +456,7 @@ func init() {
 // call to ReadMemStats. This is in contrast with a heap profile,
 // which is a snapshot as of the most recently completed garbage
 // collection cycle.
-func ReadMemStats(m *MemStats) {
+func ReadMemStats(m *MemStats) { // runtime下没有地方调用该方法，源头都是在一些test里调用
 	stopTheWorld("read mem stats")
 
 	systemstack(func() {
@@ -466,7 +466,7 @@ func ReadMemStats(m *MemStats) {
 	startTheWorld()
 }
 
-func readmemstats_m(stats *MemStats) {
+func readmemstats_m(stats *MemStats) { // runtime下没有地方调用该方法，源头都是在一些test里调用
 	updatememstats()
 
 	// The size of the trailing by_size array differs between
@@ -520,7 +520,7 @@ func readGCStats_m(pauses *[]uint64) {
 }
 
 //go:nowritebarrier
-func updatememstats() {
+func updatememstats() { // runtime下没有地方调用该方法，源头都是在一些test或debug时调用
 	memstats.mcache_inuse = uint64(mheap_.cachealloc.inuse)
 	memstats.mspan_inuse = uint64(mheap_.spanalloc.inuse)
 	memstats.sys = memstats.heap_sys + memstats.stacks_sys + memstats.mspan_sys +
@@ -628,7 +628,7 @@ func flushmcache(i int) {
 // The world must be stopped.
 //
 //go:nowritebarrier
-func flushallmcaches() {
+func flushallmcaches() { // 没有地方调用该方法，源头都是在一些test或debug时调用
 	for i := 0; i < int(gomaxprocs); i++ {
 		flushmcache(i)
 	}

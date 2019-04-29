@@ -974,7 +974,7 @@ func stopTheWorld(reason string) {
 }
 
 // startTheWorld undoes the effects of stopTheWorld.
-func startTheWorld() {
+func startTheWorld() { // runtime下没有地方调用该方法,调用源头只有runtime外部可以调用
 	systemstack(startTheWorldWithSema)
 	// worldsema must be held over startTheWorldWithSema to ensure
 	// gomaxprocs cannot change while worldsema is held.
@@ -1008,6 +1008,8 @@ var worldsema uint32 = 1
 // startTheWorldWithSema and stopTheWorldWithSema.
 // Holding worldsema causes any other goroutines invoking
 // stopTheWorld to block.
+// STW的核心实现
+// runtime下只有两个个地方会STW: 1.gc循环的mark初始阶段。2.GC循环的mark Termination阶段
 func stopTheWorldWithSema() {
 	_g_ := getg()
 
@@ -2310,7 +2312,7 @@ top:
 	}
 	// 进入gc MarkWorker 工作模式
 	if gp == nil && gcBlackenEnabled != 0 {
-		// TODO 为什么这里找不到的时候会触发下面的从global里找runq?findRunnableGCWorker是干嘛用的
+		// 优先找等待GC mark的工作任务
 		gp = gcController.findRunnableGCWorker(_g_.m.p.ptr())
 	}
 	if gp == nil {

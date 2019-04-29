@@ -179,6 +179,12 @@ type heapBits struct {
 // the address of the object in the heap.
 // We maintain one set of mark bits for allocation and one for
 // marking purposes.
+// markBits提供对heap中对象的标记位的访问。
+// bytep指向保持标记位的字节。
+// mask是一个具有单个位设置的字节，可以使用*bytep来查看该位是否已设置。
+// *m.byte＆m.mask！= 0表示标记位已设置。
+// index可以与span信息一起使用，以生成heap中对象的地址。
+// 我们维护一组标记位用于分配，一个用于标记目的。
 type markBits struct {
 	bytep *uint8
 	mask  uint8
@@ -195,6 +201,7 @@ func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {
 // and negates them so that ctz (count trailing zeros) instructions
 // can be used. It then places these 8 bytes into the cached 64 bit
 // s.allocCache.
+// 重新移动s.allocCache指向下一个64位(8字节)的allocBit
 func (s *mspan) refillAllocCache(whichByte uintptr) {
 	bytes := (*[8]uint8)(unsafe.Pointer(s.allocBits.bytep(whichByte)))
 	aCache := uint64(0)
@@ -216,7 +223,7 @@ func (s *mspan) refillAllocCache(whichByte uintptr) {
 func (s *mspan) nextFreeIndex() uintptr {
 	sfreeindex := s.freeindex
 	snelems := s.nelems
-	if sfreeindex == snelems {
+	if sfreeindex == snelems { // 如果已经到span的最后一个object,则直接返回最后object的index
 		return sfreeindex
 	}
 	if sfreeindex > snelems {
@@ -225,17 +232,17 @@ func (s *mspan) nextFreeIndex() uintptr {
 
 	aCache := s.allocCache
 
-	bitIndex := sys.Ctz64(aCache) // 计算地位0的个数
+	bitIndex := sys.Ctz64(aCache) // 计算低位0的个数
 	for bitIndex == 64 {
 		// Move index to start of next cached bits.
-		sfreeindex = (sfreeindex + 64) &^ (64 - 1)
+		sfreeindex = (sfreeindex + 64) &^ (64 - 1) // 计算64的倍数
 		if sfreeindex >= snelems {
 			s.freeindex = snelems
 			return snelems
 		}
-		whichByte := sfreeindex / 8
+		whichByte := sfreeindex / 8 // 因为sfreeindex是按bit计数的，因此要除以8得到字节数，然后按字节数更新allocCache
 		// Refill s.allocCache with the next 64 alloc bits.
-		s.refillAllocCache(whichByte)
+		s.refillAllocCache(whichByte) // 重新移动s.allocCache指向下一个64位(8字节)的allocBit
 		aCache = s.allocCache
 		bitIndex = sys.Ctz64(aCache)
 		// nothing available in cached bits
@@ -256,7 +263,7 @@ func (s *mspan) nextFreeIndex() uintptr {
 		// it was shifted away. At this point s.allocCache contains all 0s.
 		// Refill s.allocCache so that it corresponds
 		// to the bits at s.allocBits starting at s.freeindex.
-		whichByte := sfreeindex / 8
+		whichByte := sfreeindex / 8 // 因为sfreeindex是按bit计数的，因此要除以8得到字节数，然后按字节数更新allocCache
 		s.refillAllocCache(whichByte)
 	}
 	s.freeindex = sfreeindex

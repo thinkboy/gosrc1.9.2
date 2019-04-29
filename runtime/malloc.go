@@ -103,7 +103,7 @@ const (
 
 	concurrentSweep = _ConcurrentSweep
 
-	_PageSize = 1 << _PageShift
+	_PageSize = 1 << _PageShift // go里定义的内存页大小，其实就是8KB，与系统的4KB不同
 	_PageMask = _PageSize - 1
 
 	// _64bit = 1 on 64-bit systems, 0 on 32-bit systems
@@ -531,17 +531,17 @@ var zerobase uintptr
 // nextFreeFast returns the next free object if one is quickly available.
 // Otherwise it returns 0.
 // 在mspan里面获取下一个空闲内存对象的地址
-// span是一块连续的大内存，获取方式是通过移动内存指针地址
+// span里是一块连续的内存块，获取方式是通过s.freeindex和s.allocCache计算下一个空闲对象的内存地址
 func nextFreeFast(s *mspan) gclinkptr {
-	theBit := sys.Ctz64(s.allocCache) // Is there a free object in the allocCache?
+	theBit := sys.Ctz64(s.allocCache) // 计算s.allocCache从低位起有多少个0 // Is there a free object in the allocCache?
 	if theBit < 64 {
 		result := s.freeindex + uintptr(theBit)
 		if result < s.nelems {
 			freeidx := result + 1
-			if freeidx%64 == 0 && freeidx != s.nelems {
+			if freeidx%64 == 0 && freeidx != s.nelems { // 如果是最后一个，特殊处理：告诉上层没有空闲的object
 				return 0
 			}
-			s.allocCache >>= uint(theBit + 1)
+			s.allocCache >>= uint(theBit + 1) // TODO theBit!=0的case是怎么出现的
 			s.freeindex = freeidx
 			v := gclinkptr(result*s.elemsize + s.base()) // 计算空闲内存块指针地址
 			s.allocCount++
@@ -684,6 +684,15 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			// standalone escaping variables. On a json benchmark
 			// the allocator reduces number of allocations by ~12% and
 			// reduces heap size by ~20%.
+
+			// Tiny分配器将几个微小的分配请求组合到一个内存块中。当所有子对象都无法访问时，将释放生成的内存块。子对象必须是noscan（没有指针），这可以确保可能浪费的内存量受到限制。
+			// 用于组合的内存块的大小（maxTinySize）是可调的。当前设置为16个字节，这与2x最坏情况的内存浪费（当除了一个子对象之外的所有子对象都无法访问时）有关。
+			// 8字节将导致完全没有浪费，但提供更少的组合机会。
+			// 32字节提供了更多的组合机会，但可能导致4倍最坏情况下的浪费。
+			// 无论块大小如何，获胜的最佳案例是8倍。
+			// 从tiny分配器获得的对象不得明确释放。因此，当显式释放对象时，我们确保其大小> = maxTinySize。
+			// SetFinalizer对于可能来自微小分配器的对象有一个特殊情况，它允许为内存块的内部字节设置终结器。
+			// 微分配器的主要目标是小字符串和独立的转义变量。在json基准测试中，分配器将分配数量减少了大约12％，并将堆大小减少了大约20％。
 			off := c.tinyoffset
 			// Align tiny pointer for required (conservative) alignment.
 			if size&7 == 0 {
