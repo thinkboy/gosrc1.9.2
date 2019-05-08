@@ -388,7 +388,7 @@ type gcControllerState struct {
 	// workers that need to be started. This is computed at the
 	// beginning of each cycle and decremented atomically as
 	// dedicated mark workers get started.
-	dedicatedMarkWorkersNeeded int64 // 专用于参与标记工作的任务计数
+	dedicatedMarkWorkersNeeded int64 // 剩余需要开启并发标记工作的任务数量
 
 	// assistWorkPerByte is the ratio of scan work to allocated
 	// bytes that should be performed by mutator assists. This is
@@ -692,8 +692,8 @@ func (c *gcControllerState) findRunnableGCWorker(_p_ *p) *g {
 
 	// 这里控制了只有1/4的标记任务并发运行，实现逻辑如下：
 	// 1. c.dedicatedMarkWorkersNeeded初始化时只有核数的1/4，表示有1/4的标记任务可以运行(在gcControllerState.startCycle()里实现)
-	// 2. decIfPositive给c.dedicatedMarkWorkersNeeded计数减1，表示可运行的标记任务少1个。
-	// 3. 标记任务执行完后再给c.dedicatedMarkWorkersNeeded计数加1，表示允许多一个标记任务可运行。
+	// 2. decIfPositive给c.dedicatedMarkWorkersNeeded计数减1，表示可运行的标记并行任务少1个。
+	// 3. 标记任务执行完后再给c.dedicatedMarkWorkersNeeded计数加1，表示允许多一个标记任务可并行运行。
 	// 通过上面3个步骤可以控制并发的数量只有1/4的核数
 	if decIfPositive(&c.dedicatedMarkWorkersNeeded) { // 如果有需要标记的任务
 		// This P is now dedicated to marking until the end of
@@ -1666,8 +1666,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 // These goroutines will not run until the mark phase, but they must
 // be started while the work is not stopped and from a regular G
 // stack. The caller must hold worldsema.
-// 预备后台mark任务goroutines，直到mark阶段这些goroutines不会运行，
-// 但是它们必须启动
+// 预备后台mark任务goroutines，直到mark阶段这些goroutines不会运行，但是它们必须启动
 func gcBgMarkStartWorkers() {
 	// Background marking is performed by per-P G's. Ensure that
 	// each P has a background GC G.
@@ -1678,7 +1677,7 @@ func gcBgMarkStartWorkers() {
 		}
 		if p.gcBgMarkWorker == 0 { // 如果已启动则不需要再启动
 			go gcBgMarkWorker(p)
-			notetsleepg(&work.bgMarkReady, -1) // TODO 在gcBgMarkWorker()里很快就会唤醒，这里是为了控制逐个P启动mark任务？
+			notetsleepg(&work.bgMarkReady, -1)
 			noteclear(&work.bgMarkReady)
 		}
 	}
@@ -1841,7 +1840,7 @@ func gcBgMarkWorker(_p_ *p) {
 		switch _p_.gcMarkWorkerMode {
 		case gcMarkWorkerDedicatedMode:
 			atomic.Xaddint64(&gcController.dedicatedMarkTime, duration)
-			atomic.Xaddint64(&gcController.dedicatedMarkWorkersNeeded, 1) // 计数+1表示允许多1个任务运行
+			atomic.Xaddint64(&gcController.dedicatedMarkWorkersNeeded, 1) // 计数+1表示允许新增1个标记任务并行运行
 		case gcMarkWorkerFractionalMode:
 			atomic.Xaddint64(&gcController.fractionalMarkTime, duration)
 			atomic.Xaddint64(&gcController.fractionalMarkWorkersNeeded, 1)

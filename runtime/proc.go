@@ -588,6 +588,7 @@ func mcommoninit(mp *m) {
 }
 
 // Mark gp ready to run.
+// 唤醒指定的G,使其进入待运行状态
 func ready(gp *g, traceskip int, next bool) {
 	if trace.enabled {
 		traceGoUnpark(gp, traceskip)
@@ -1979,7 +1980,7 @@ func execute(gp *g, inheritTime bool) {
 		traceGoStart()
 	}
 
-	// 真正的执行g（汇编实现）
+	// 真正的执行G，切换到该G的栈帧上（汇编实现）
 	gogo(&gp.sched)
 }
 
@@ -2420,7 +2421,8 @@ func goschedImpl(gp *g) {
 }
 
 // Gosched continuation on g0.
-// 只有Gosched方法调用，终止G运行让出M，从而让出CPU
+// 只有Gosched方法调用
+// 终止G运行让出M，从而让出CPU
 func gosched_m(gp *g) {
 	if trace.enabled {
 		traceGoSched()
@@ -2627,6 +2629,8 @@ func reentersyscall(pc, sp uintptr) {
 
 // Standard syscall entry used by the go syscall library and normal cgo calls.
 // 进入系统调用
+// 用于标准的syscall.Syscall/syscall.Syscall6方法中掉用,或者cgo调用
+// entersyscall方法中只是标记G可进行抢占
 //go:nosplit
 func entersyscall(dummy int32) {
 	reentersyscall(getcallerpc(unsafe.Pointer(&dummy)), getcallersp(unsafe.Pointer(&dummy)))
@@ -2660,7 +2664,8 @@ func entersyscall_gcwait() {
 }
 
 // The same as entersyscall(), but with a hint that the syscall is blocking.
-// 类似于entersyscall()方法，但是是一个会阻塞的系统调用,比如锁
+// 类似于entersyscall()方法，但是是一个会阻塞的系统调用
+// 进入系统调用前先要把当前正在执行的M与P分离，让出P，交给其它M继续执行P里的任务，而当前M占有一个系统线程继续执行系统调用
 //go:nosplit
 func entersyscallblock(dummy int32) {
 	_g_ := getg()
@@ -2695,7 +2700,7 @@ func entersyscallblock(dummy int32) {
 		})
 	}
 
-	systemstack(entersyscallblock_handoff)
+	systemstack(entersyscallblock_handoff) // 进入系统调用时，让P剥离出当前正在执行的M，寻找个新的M继续执行
 
 	// Resave for traceback during blocked call.
 	save(getcallerpc(unsafe.Pointer(&dummy)), getcallersp(unsafe.Pointer(&dummy)))
@@ -2703,12 +2708,13 @@ func entersyscallblock(dummy int32) {
 	_g_.m.locks--
 }
 
+// 进入系统调用时，让P剥离出当前正在执行的M，寻找个新的M继续执行
 func entersyscallblock_handoff() {
 	if trace.enabled {
 		traceGoSysCall()
 		traceGoSysBlock(getg().m.p.ptr())
 	}
-	// 释放P，让他执行其它的G
+	// 释放P，让它再绑定个新的M去执行其它的G
 	handoffp(releasep())
 }
 
@@ -3111,7 +3117,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, nret int32, callerpc uintptr
 	memclrNoHeapPointers(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
 	newg.stktopsp = sp
-	newg.sched.pc = funcPC(goexit) + sys.PCQuantum // +PCQuantum so that previous instruction is in same function
+	newg.sched.pc = funcPC(goexit) + sys.PCQuantum // 记录当前任务的pc寄存器为goexit方法，用于当执行G结束后找到退出方法，从而再次进入调度循环 // +PCQuantum so that previous instruction is in same function
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
 	gostartcallfn(&newg.sched, fn)
 	newg.gopc = callerpc
@@ -3836,6 +3842,7 @@ func acquirep1(_p_ *p) {
 }
 
 // Disassociate p and the current m.
+// 把P跟当前执行的M分开
 func releasep() *p {
 	_g_ := getg()
 
