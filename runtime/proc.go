@@ -1980,7 +1980,7 @@ func execute(gp *g, inheritTime bool) {
 		traceGoStart()
 	}
 
-	// 真正的执行G，切换到该G的栈帧上（汇编实现）
+	// 真正的执行G，切换到该G的栈帧上执行（汇编实现）
 	gogo(&gp.sched)
 }
 
@@ -2017,12 +2017,12 @@ top:
 		asmcgocall(*cgo_yield, nil)
 	}
 
-	// 从本地队列获取
+	// 从P本地获取
 	if gp, inheritTime := runqget(_p_); gp != nil {
 		return gp, inheritTime
 	}
 
-	// 全局队列获取
+	// 从全局队列取
 	if sched.runqsize != 0 {
 		lock(&sched.lock)
 		gp := globrunqget(_p_, 0)
@@ -2038,7 +2038,7 @@ top:
 	// If there is any kind of logical race with that blocked thread
 	// (e.g. it has already returned from netpoll, but does not set lastpoll yet),
 	// this thread will do blocking netpoll below anyway.
-	// 从epoll里去
+	// 从epoll里取
 	if netpollinited() && sched.lastpoll != 0 {
 		if gp := netpoll(false); gp != nil { // non-blocking
 			// netpoll returns list of goroutines linked by schedlink.
@@ -2562,6 +2562,8 @@ func save(pc, sp uintptr) {
 // because tracing can be enabled in the middle of syscall. We don't want the wait to hang.
 //
 // 进入系统调用
+// 1.保存当前执行现场
+// 2.标记G的状态为_Gsyscall
 //go:nosplit
 func reentersyscall(pc, sp uintptr) {
 	_g_ := getg()
@@ -2614,7 +2616,7 @@ func reentersyscall(pc, sp uintptr) {
 	_g_.sysblocktraced = true
 	_g_.m.mcache = nil
 	_g_.m.p.ptr().m = 0
-	atomic.Store(&_g_.m.p.ptr().status, _Psyscall)
+	atomic.Store(&_g_.m.p.ptr().status, _Psyscall) // P也标记系统调用状态
 	if sched.gcwaiting != 0 {
 		systemstack(entersyscall_gcwait)
 		save(pc, sp)
@@ -2623,7 +2625,7 @@ func reentersyscall(pc, sp uintptr) {
 	// Goroutines must not split stacks in Gsyscall status (it would corrupt g->sched).
 	// We set _StackGuard to StackPreempt so that first split stack check calls morestack.
 	// Morestack detects this case and throws.
-	_g_.stackguard0 = stackPreempt
+	_g_.stackguard0 = stackPreempt // 标记抢占状态，等待被抢占
 	_g_.m.locks--
 }
 
@@ -2901,6 +2903,7 @@ func exitsyscallfast_pidle() bool {
 // Failed to acquire P, enqueue gp as runnable.
 //
 // 系统调用返回的时候，如果没找到可用的P则会调用这里
+// 如果可以拿到一个空闲P则直接执行，如果没有则放到全局队列里
 // 设置为_Grunnable放到待运行队列里
 //go:nowritebarrierrec
 func exitsyscall0(gp *g) {
@@ -2912,7 +2915,7 @@ func exitsyscall0(gp *g) {
 	// 获取一个空闲的P，如果没有则放到全局队列里，如果有则执行
 	_p_ := pidleget()
 	if _p_ == nil {
-		globrunqput(gp)
+		globrunqput(gp) // 如果没有P就放到全局队列里,等待有资源时执行
 	} else if atomic.Load(&sched.sysmonwait) != 0 {
 		atomic.Store(&sched.sysmonwait, 0)
 		notewakeup(&sched.sysmonnote)
@@ -2920,7 +2923,7 @@ func exitsyscall0(gp *g) {
 	unlock(&sched.lock)
 	if _p_ != nil {
 		acquirep(_p_)
-		execute(gp, false) // Never returns.
+		execute(gp, false) // Never returns. // 如果找到空闲的P则直接执行
 	}
 	if _g_.m.lockedg != nil {
 		// Wait until another thread schedules gp and so m again.
@@ -2928,7 +2931,7 @@ func exitsyscall0(gp *g) {
 		execute(gp, false) // Never returns.
 	}
 	stopm()
-	schedule() // Never returns.
+	schedule() // Never returns. // 没有P资源执行，就继续下一轮调度循环
 }
 
 func beforefork() {
@@ -4038,7 +4041,7 @@ func sysmon() {
 			asmcgocall(*cgo_yield, nil)
 		}
 		// poll network if not polled for more than 10ms
-		// 获取超过10ms的netpoll结果。
+		// 如果超过10ms了，则执行netpoll一次
 		// PS:这里想到一个问题，超过10ms才会从epoll里获取可运行的任务，会不会造成所有网络通讯都延迟10ms以上？
 		// 答案是当然不会,不要忘了在G调度的时候,findrunnable()会执行netpoll()方法获取任务
 		lastpoll := int64(atomic.Load64(&sched.lastpoll))
@@ -4369,7 +4372,7 @@ func globrunqputbatch(ghead *g, gtail *g, n int32) {
 // Try get a batch of G's from the global runnable queue.
 // Sched must be locked.
 // 尝试从全局runq中获取G
-// 在"sched.runqsize/gomaxprocs + 1"、"max"、"len(_p_.runq))/2"三个条件中取最小的数量
+// 在"sched.runqsize/gomaxprocs + 1"、"max"、"len(_p_.runq))/2"三个数字中取最小的数字作为获取的G数量
 func globrunqget(_p_ *p, max int32) *g {
 	if sched.runqsize == 0 {
 		return nil
@@ -4397,7 +4400,7 @@ func globrunqget(_p_ *p, max int32) *g {
 	for ; n > 0; n-- {
 		gp1 := sched.runqhead.ptr()
 		sched.runqhead = gp1.schedlink
-		runqput(_p_, gp1, false)
+		runqput(_p_, gp1, false) // 放到本地P里
 	}
 	return gp
 }
@@ -4548,9 +4551,10 @@ func runqputslow(_p_ *p, gp *g, h, t uint32) bool {
 // If inheritTime is true, gp should inherit the remaining time in the
 // current time slice. Otherwise, it should start a new time slice.
 // Executed only by the owner P.
+// 从P本地获取一个可运行的G
 func runqget(_p_ *p) (gp *g, inheritTime bool) {
 	// If there's a runnext, it's the next G to run.
-	// 优先从runnext里获取一个g，如果没有则从runq里获取
+	// 优先从runnext里获取一个G，如果没有则从runq里获取
 	for {
 		next := _p_.runnext
 		if next == 0 {
