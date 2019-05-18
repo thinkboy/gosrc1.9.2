@@ -361,6 +361,7 @@ func (m *markBits) advance() {
 // The caller must have already checked that addr is in the range [mheap_.arena_start, mheap_.arena_used).
 //
 // nosplit because it is used during write barriers and must not be preempted.
+// 通过arena地址计算出对应的bitmap的位置,并封装到heapBits对象里
 //go:nosplit
 func heapBitsForAddr(addr uintptr) heapBits {
 	// 2 bits per work, 4 pairs per byte, and a mask is hard coded.
@@ -393,10 +394,10 @@ func heapBitsForObject(p, refBase, refOff uintptr) (base uintptr, hbits heapBits
 		return
 	}
 	off := p - arenaStart
-	idx := off >> _PageShift
+	idx := off >> _PageShift // 根据地址计算出属于arena区域里的第idx个page
 	// p points into the heap, but possibly to the middle of an object.
 	// Consult the span table to find the block beginning.
-	s = mheap_.spans[idx]
+	s = mheap_.spans[idx] // 根据page找到所属span（在分配内存时做的page跟span的关联关系）
 	if s == nil || p < s.base() || p >= s.limit || s.state != mSpanInUse {
 		if s == nil || s.state == _MSpanManual {
 			// If s is nil, the virtual address has never been part of the heap.

@@ -1512,7 +1512,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 
 		// marking is complete so we can turn the write barrier off
 		setGCPhase(_GCoff)
-		gcSweep(work.mode) // 最终进行sweep清理
+		gcSweep(work.mode) // 唤醒后台清理任务
 
 		if debug.gctrace > 1 {
 			startTime = nanotime()
