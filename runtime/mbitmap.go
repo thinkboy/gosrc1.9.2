@@ -297,6 +297,7 @@ func markBitsForAddr(p uintptr) markBits {
 	return s.markBitsForIndex(objIndex)
 }
 
+// 通过span里的object的索引(index)找到markBits
 func (s *mspan) markBitsForIndex(objIndex uintptr) markBits {
 	bytep, mask := s.gcmarkBits.bitp(objIndex)
 	return markBits{bytep, mask, objIndex}
@@ -388,6 +389,8 @@ func heapBitsForSpan(base uintptr) (hbits heapBits) {
 // refBase and refOff optionally give the base address of the object
 // in which the pointer p was found and the byte offset at which it
 // was found. These are used for error reporting.
+// 返回参数base指向对象地址
+// 如果参数p不是指向一个对象(比如在scanobject里，大于128KB的对象是被拆开的)则返回base==0。
 func heapBitsForObject(p, refBase, refOff uintptr) (base uintptr, hbits heapBits, s *mspan, objIndex uintptr) {
 	arenaStart := mheap_.arena_start
 	if p < arenaStart || p >= mheap_.arena_used {
@@ -397,7 +400,7 @@ func heapBitsForObject(p, refBase, refOff uintptr) (base uintptr, hbits heapBits
 	idx := off >> _PageShift // 根据地址计算出属于arena区域里的第idx个page
 	// p points into the heap, but possibly to the middle of an object.
 	// Consult the span table to find the block beginning.
-	s = mheap_.spans[idx] // 根据page找到所属span（在分配内存时做的page跟span的关联关系）
+	s = mheap_.spans[idx] // 根据page找到所属span（在分配内存时建立的page跟span的关联关系）
 	if s == nil || p < s.base() || p >= s.limit || s.state != mSpanInUse {
 		if s == nil || s.state == _MSpanManual {
 			// If s is nil, the virtual address has never been part of the heap.

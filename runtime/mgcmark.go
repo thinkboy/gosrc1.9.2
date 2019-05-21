@@ -413,6 +413,10 @@ func markrootSpans(gcw *gcWork, shard int) {
 // gp must be the calling user gorountine.
 //
 // This must be called with preemption enabled.
+// 执行辅助GC工作.
+// 参数gp必须是用户的goroutine.
+// G必须被抢占时才调用.
+// 在该方法中主要依靠系数gcController.assistWorkPerByte、gcController.assistBytesPerWork计算辅助扫描的大小，最终计算出scanWork大小进行标记
 func gcAssistAlloc(gp *g) {
 	// Don't assist in non-preemptible contexts. These are
 	// generally fragile and won't allow the assist to block.
@@ -473,7 +477,7 @@ retry:
 
 	// Perform assist work
 	systemstack(func() {
-		gcAssistAlloc1(gp, scanWork)
+		gcAssistAlloc1(gp, scanWork) // 扫描标记scanWork大小的对象
 		// The user stack may have moved, so this can't touch
 		// anything on it until it returns from systemstack.
 	})
@@ -527,6 +531,7 @@ retry:
 // phase by setting gp.param to non-nil. This can't be communicated on
 // the stack since it may move.
 //
+// 辅助GC时指定scanWork数量的对象标记
 //go:systemstack
 func gcAssistAlloc1(gp *g, scanWork int64) {
 	// Clear the flag indicating that this assist completed the
@@ -1002,6 +1007,7 @@ done:
 // _Gwaiting) to prevent deadlocks during stack scanning. As a
 // consequence, this must be called on the system stack.
 //
+// 辅助GC时用到该方法，指定scanWork数量的对象进行标记
 //go:nowritebarrier
 //go:systemstack
 func gcDrainN(gcw *gcWork, scanWork int64) int64 {
@@ -1174,9 +1180,9 @@ func scanobject(b uintptr, gcw *gcWork) {
 		}
 	}
 
-	// 每8个字节一次循环。
+	// 每8个字节一次for循环。
 	// 在bitmap的组成结构里每个byte里有2个bits表示arena区域里的对应位置的指针大小，也就是8字节，
-	// 所以在这里其实等于是按照bitmap里的标记进行逐个check的。
+	// 所以在这里其实等于是按照bitmap里的标记逐个check的。
 	var i uintptr
 	for i = 0; i < n; i += sys.PtrSize {
 		// Find bits for this word.
@@ -1211,7 +1217,7 @@ func scanobject(b uintptr, gcw *gcWork) {
 		}
 	}
 	gcw.bytesMarked += uint64(n) // 累计标记的字节大小
-	gcw.scanWork += int64(i)     // 累计扫描的次数(每一次扫描是8个字节,而不是一个对象)
+	gcw.scanWork += int64(i)     // 累计扫描的字节大小
 }
 
 // Shade the object if it isn't already.

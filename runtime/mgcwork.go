@@ -82,7 +82,7 @@ type gcWork struct {
 
 	// Scan work performed on this gcWork. This is aggregated into
 	// gcController by dispose and may also be flushed by callers.
-	scanWork int64 // 扫描的次数(每一次扫描是8个字节,而不是一个对象)
+	scanWork int64 // 累计扫描的字节大小
 }
 
 // 初始化wbuf1、wbuf2
@@ -237,6 +237,7 @@ func (w *gcWork) get() uintptr {
 // GC can inspect them. This helps reduce the mutator's
 // ability to hide pointers during the concurrent mark phase.
 //
+// 把本地cache的对象扔给全局标记队列
 //go:nowritebarrier
 func (w *gcWork) dispose() {
 	if wbuf := w.wbuf1; wbuf != nil {
@@ -260,11 +261,11 @@ func (w *gcWork) dispose() {
 		// atomic becomes a problem, we should first try to
 		// dispose less and if necessary aggregate in a per-P
 		// counter.
-		atomic.Xadd64(&work.bytesMarked, int64(w.bytesMarked))
+		atomic.Xadd64(&work.bytesMarked, int64(w.bytesMarked)) // 统计每轮GC标记的字节的计数
 		w.bytesMarked = 0
 	}
 	if w.scanWork != 0 {
-		atomic.Xaddint64(&gcController.scanWork, w.scanWork)
+		atomic.Xaddint64(&gcController.scanWork, w.scanWork) // 统计每轮GC扫描的字节的计数
 		w.scanWork = 0
 	}
 }

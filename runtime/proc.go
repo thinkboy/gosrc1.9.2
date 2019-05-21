@@ -2089,6 +2089,8 @@ stop:
 	// We have nothing to do. If we're in the GC mark phase, can
 	// safely scan and blacken objects, and have work to do, run
 	// idle-time marking rather than give up the P.
+	// 执行到这里的话说明没有任务事情去做。
+	// 如果正在GC mark阶段，我们可以让它做一些"空闲模式"的GC mark工作，而不是让P没事做。
 	if gcBlackenEnabled != 0 && _p_.gcBgMarkWorker != 0 && gcMarkWorkAvailable(_p_) {
 		_p_.gcMarkWorkerMode = gcMarkWorkerIdleMode
 		gp := _p_.gcBgMarkWorker.ptr()
@@ -2159,6 +2161,7 @@ stop:
 	}
 
 	// Check for idle-priority GC work again.
+	// 再次检测是否可以进行"空闲模式"的GC工作
 	if gcBlackenEnabled != 0 && gcMarkWorkAvailable(nil) {
 		lock(&sched.lock)
 		_p_ = pidleget()
@@ -2320,7 +2323,7 @@ top:
 		// Check the global runnable queue once in a while to ensure fairness.
 		// Otherwise two goroutines can completely occupy the local runqueue
 		// by constantly respawning each other.
-		// 每处理n个任务就去全局队列获取G任务,确保公平
+		// 每处理62个任务就去全局队列获取G任务,确保公平
 		if _g_.m.p.ptr().schedtick%61 == 0 && sched.runqsize > 0 {
 			lock(&sched.lock)
 			gp = globrunqget(_g_.m.p.ptr(), 1)

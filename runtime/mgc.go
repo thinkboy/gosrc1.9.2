@@ -253,6 +253,7 @@ var writeBarrier struct {
 // gcBlackenEnabled is 1 if mutator assists and background mark
 // workers are allowed to blacken objects. This must only be set when
 // gcphase == _GCmark.
+// 设置为1表示正在处于gc mark阶段
 var gcBlackenEnabled uint32
 
 // gcBlackenPromptly indicates that optimizations that may
@@ -349,7 +350,7 @@ type gcControllerState struct {
 	// Currently this is the bytes of heap scanned. For most uses,
 	// this is an opaque unit of work, but for estimation the
 	// definition is important.
-	scanWork int64
+	scanWork int64 // 每轮GC扫描的字节的计数
 
 	// bgScanCredit is the scan work credit accumulated by the
 	// concurrent background scan. This credit is accumulated by
@@ -499,6 +500,8 @@ func (c *gcControllerState) startCycle() {
 // It should only be called when gcBlackenEnabled != 0 (because this
 // is when assists are enabled and the necessary statistics are
 // available).
+// GC期间计算更新辅助GC的比例，提升系数。
+// 应该在STW时候或者memstats.heap_scan, memstats.heap_live, memstats.next_gc三个值改变的时候调用
 func (c *gcControllerState) revise() {
 	// Compute the expected scan work remaining.
 	//
@@ -924,7 +927,7 @@ var work struct {
 	//
 	// Put this field here because it needs 64-bit atomic access
 	// (and thus 8-byte alignment even on 32-bit architectures).
-	bytesMarked uint64
+	bytesMarked uint64 // 每轮GC标记的字节大小
 
 	markrootNext uint32 // next markroot job
 	markrootJobs uint32 // number of markroot jobs
@@ -1022,6 +1025,8 @@ var work struct {
 	pauseStart int64 // nanotime() of last STW // 计算pauseNS字段的辅助字段，每次sweep之前都记录下开始时间
 
 	// debug.gctrace heap sizes for this cycle.
+	// 给debug.gctrace用的统计变量：
+	// heap2表示GC结束后被标记的字节大小(等价于存活的对象字节大小)
 	heap0, heap1, heap2, heapGoal uint64
 }
 
@@ -1401,7 +1406,7 @@ top:
 			// also blocks until any remaining mark 1
 			// workers have exited their loop so we can
 			// start new mark 2 workers.
-			forEachP(func(_p_ *p) {
+			forEachP(func(_p_ *p) { // flush所有的cache到本地队列的任务到全局标记队列
 				_p_.gcw.dispose()
 			})
 		})
@@ -1433,7 +1438,7 @@ top:
 		work.tMarkTerm = now
 		work.pauseStart = now
 		getg().m.preemptoff = "gcing"
-		systemstack(stopTheWorldWithSema) // 进入最终阶段进行sweep之前世界停止了 STW
+		systemstack(stopTheWorldWithSema) // 进入最终阶段进行sweep之前世界停止了(STW)
 		// The gcphase is _GCmark, it will transition to _GCmarktermination
 		// below. The important thing is that the wb remains active until
 		// all marking is complete. This includes writes made by the GC.
@@ -1443,7 +1448,7 @@ top:
 
 		// Disable assists and background workers. We must do
 		// this before waking blocked assists.
-		atomic.Store(&gcBlackenEnabled, 0)
+		atomic.Store(&gcBlackenEnabled, 0) // 设置0，表示GC mark阶段结束
 
 		// Wake all blocked assists. These will run when we
 		// start the world again.
@@ -1459,11 +1464,12 @@ top:
 		nextTriggerRatio := gcController.endCycle()
 
 		// Perform mark termination. This will restart the world.
+		// 完成mark最终步骤
 		gcMarkTermination(nextTriggerRatio)
 	}
 }
 
-// gcMark结束，准备进行sweep
+// gcMark结束，唤醒后台清理任务
 func gcMarkTermination(nextTriggerRatio float64) {
 	// World is stopped.
 	// Start marktermination which includes enabling the write barrier.
@@ -1499,7 +1505,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	})
 
 	systemstack(func() {
-		work.heap2 = work.bytesMarked // 清理前记录下marked的堆大小,即存活的堆大小
+		work.heap2 = work.bytesMarked // 清理前记录下marked的堆字节大小
 		if debug.gccheckmark > 0 {
 			// Run a full stop-the-world mark using checkmark bits,
 			// to check that we didn't forget to mark anything during
@@ -1805,7 +1811,7 @@ func gcBgMarkWorker(_p_ *p) {
 					// queue so it can run
 					// somewhere else.
 					lock(&sched.lock)
-					for {
+					for { // 如果当前标记任务被抢占了，则把本地待运行的G扔给全局队列
 						gp, _ := runqget(_p_)
 						if gp == nil {
 							break
@@ -1859,7 +1865,7 @@ func gcBgMarkWorker(_p_ *p) {
 
 		// If this worker reached a background mark completion
 		// point, signal the main GC goroutine.
-		// 如果本次worker已经是最后一个完成的则进入标记完成逻辑
+		// 如果本次worker已经是最后一个完成的则进入标记完成阶段
 		if incnwait == work.nproc && !gcMarkWorkAvailable(nil) {
 			// Make this G preemptible and disassociate it
 			// as the worker for this P so
@@ -1885,6 +1891,7 @@ func gcBgMarkWorker(_p_ *p) {
 // gcMarkWorkAvailable returns true if executing a mark worker
 // on p is potentially useful. p may be nil, in which case it only
 // checks the global sources of work.
+// 检测是否还有标记任务未完成，有的话返回true，没有的话返回false
 func gcMarkWorkAvailable(p *p) bool {
 	if p != nil && !p.gcw.empty() {
 		return true
@@ -2015,7 +2022,7 @@ func gcSweep(mode gcMode) {
 	}
 
 	lock(&mheap_.lock)
-	mheap_.sweepgen += 2
+	mheap_.sweepgen += 2 // 交换mheap_.sweepSpans里的2个数组元素,把“清扫过”的spans切换为“未清扫”
 	mheap_.sweepdone = 0 // 标记sweep开始
 	if mheap_.sweepSpans[mheap_.sweepgen/2%2].index != 0 {
 		// We should have drained this list during the last
@@ -2026,7 +2033,7 @@ func gcSweep(mode gcMode) {
 	mheap_.pagesSwept = 0
 	unlock(&mheap_.lock)
 
-	if !_ConcurrentSweep || mode == gcForceBlockMode {
+	if !_ConcurrentSweep || mode == gcForceBlockMode { // 如果是强制GC模式
 		// Special case synchronous sweep.
 		// Record that no proportional sweeping has to happen.
 		lock(&mheap_.lock)

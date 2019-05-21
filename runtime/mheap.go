@@ -61,6 +61,7 @@ type mheap struct {
 	// This is backed by a reserved region of the address space so
 	// it can grow without moving. The memory up to len(spans) is
 	// mapped. cap(spans) indicates the total reserved memory.
+	// spans是全局的虚拟地址跟page的映射关系表，数组的索引就是page id，如果mspan的元素大小有2个page则有2个数组下角标指向同一个mspan
 	spans []*mspan
 
 	// sweepSpans contains two mspan stacks: one of swept in-use
@@ -72,10 +73,11 @@ type mheap struct {
 	// unswept stack and pushes spans that are still in-use on the
 	// swept stack. Likewise, allocating an in-use span pushes it
 	// on the swept stack.
-	// sweepSpans包含2个mspan：一个清理过的正在使用的span，一个是未清理过的正在使用的span。
-	// 这两个span在每一次gc循环中交换.因此每次sweepgen都会加2.
-	// 清扫过的span在sweepSpans[sweepgen/2%2]里，未清扫过的span在sweepSpans[1-sweepgen/2%2]
-	// sweep操作就是从未清扫sweepSpans里pop出来，然后push给清扫过的sweepSpans里
+	// sweepSpans包含2个mspan：一个清理过的正在使用的spans，一个是未清理过的正在使用的spans。
+	// 这两个span在每一次gc循环中通过数组下角标使用sweepgen+2(也就是sweepgen/2%2的值+1)实现交换两个spans，也就是说把“清扫过”的spans通过数组下角标增加1的方式切换为“未清扫”
+	// sweepSpans[sweepgen/2%2]保存清扫过的正在使用的span，sweepSpans[1-sweepgen/2%2]保存未清扫过的正在使用的span
+	// sweep工作就是从未清扫sweepSpans里pop出来，然后push给清扫过的sweepSpans里
+	// 同样的，分配一个正在使用的span，也要push给已扫描过的sweepSpans[sweepgen/2%2]里
 	sweepSpans [2]gcSweepBuf
 
 	_ uint32 // align uint64 fields on 32-bit for atomics
@@ -317,7 +319,7 @@ type mspan struct {
 	npreleased  uintptr    // number of pages released to the os
 	limit       uintptr    // span的内存末尾指针 // end of data in span
 	speciallock mutex      // guards specials list
-	specials    *special   // linked list of special records sorted by offset.
+	specials    *special   // 特殊的span，来源于外部的调用或者pprof相关产生，并非runtime主流程用到 //linked list of special records sorted by offset.
 }
 
 func (s *mspan) base() uintptr {
@@ -688,7 +690,7 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 	memstats.tinyallocs += uint64(_g_.m.mcache.local_tinyallocs)
 	_g_.m.mcache.local_tinyallocs = 0
 
-	// 从mheap分配指定页数的span
+	// 分配指定页数的span
 	s := h.allocSpanLocked(npage, &memstats.heap_inuse)
 	if s != nil {
 		// Record span info, because gc needs to be
@@ -944,7 +946,7 @@ func (h *mheap) grow(npage uintptr) bool {
 	s := (*mspan)(h.spanalloc.alloc())
 	s.init(uintptr(v), ask>>_PageShift)
 	p := (s.base() - h.arena_start) >> _PageShift // 计算出来当前分配的span内存属于arena区域的第p页
-	for i := p; i < p+s.npages; i++ {             // TODO 把第p页及p页以后的所有h.spans都指向该span?
+	for i := p; i < p+s.npages; i++ {             // 在h.spans里把每个page与所属span映射。gc mark时通过对象地址计算出page从而找到span
 		h.spans[i] = s
 	}
 	atomic.Store(&s.sweepgen, h.sweepgen)
@@ -1358,6 +1360,7 @@ const (
 	// if that happens.
 )
 
+// (special对象由runtime外部调用或者pprof相关产生相关产生的对象，非runtime主流程)
 //go:notinheap
 type special struct {
 	next   *special // linked list in span
@@ -1470,7 +1473,7 @@ type specialfinalizer struct {
 }
 
 // Adds a finalizer to the object p. Returns true if it succeeded.
-func addfinalizer(p unsafe.Pointer, f *funcval, nret uintptr, fint *_type, ot *ptrtype) bool {
+func addfinalizer(p unsafe.Pointer, f *funcval, nret uintptr, fint *_type, ot *ptrtype) bool { // 由外部调用，runtime下没有地方调用该方法
 	lock(&mheap_.speciallock)
 	s := (*specialfinalizer)(mheap_.specialfinalizeralloc.alloc())
 	unlock(&mheap_.speciallock)
@@ -1529,7 +1532,7 @@ type specialprofile struct {
 }
 
 // Set the heap profile bucket associated with addr to b.
-func setprofilebucket(p unsafe.Pointer, b *bucket) {
+func setprofilebucket(p unsafe.Pointer, b *bucket) { // (pprof相关调用，非主runtime下逻辑)
 	lock(&mheap_.speciallock)
 	s := (*specialprofile)(mheap_.specialprofilealloc.alloc())
 	unlock(&mheap_.speciallock)

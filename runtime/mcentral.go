@@ -21,7 +21,7 @@ type mcentral struct {
 	lock      mutex
 	spanclass spanClass // 当前mcentral的spanclass
 	nonempty  mSpanList // 有空闲object的span列表 //list of spans with a free object, ie a nonempty free list
-	empty     mSpanList // 没有空闲object在mcache中使用的span列表 //list of spans with no free objects (or cached in an mcache)
+	empty     mSpanList // 没有空闲object（或者是在mcache中使用)的span列表 //list of spans with no free objects (or cached in an mcache)
 
 	// nmalloc is the cumulative count of objects allocated from
 	// this mcentral, assuming all spans in mcaches are
@@ -219,14 +219,14 @@ func (c *mcentral) freeSpan(s *mspan, preserve bool, wasempty bool) bool {
 	// lock of c above.)
 	atomic.Store(&s.sweepgen, mheap_.sweepgen) // 标记span的清扫状态为已清扫完毕，可用于再分配
 
-	if s.allocCount != 0 { // 如果span分配过内存则return false表示不需要返回给heap
+	if s.allocCount != 0 { // 如果span中还有使用中的object则return false，表示不需要返回给heap
 		unlock(&c.lock)
 		return false
 	}
 
 	c.nonempty.remove(s) // 如果从未分配过内存，则返还给heap
 	unlock(&c.lock)
-	mheap_.freeSpan(s, 0)
+	mheap_.freeSpan(s, 0) // 返还给mheap
 	return true
 }
 

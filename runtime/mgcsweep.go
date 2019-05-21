@@ -112,7 +112,7 @@ func sweepone() uintptr {
 			}
 			continue
 		}
-		// 只有sweepgen==sg-2时，即处于待清扫状态时才可以跳过这里的continue执行下面的清扫操作。并且切换状态为sweepgen==sg-1,即切换为正在清扫状态
+		// 切换span的状态为h->sweepgen - 1,即表示span开始进入清扫中状态
 		if s.sweepgen != sg-2 || !atomic.Cas(&s.sweepgen, sg-2, sg-1) {
 			continue
 		}
@@ -298,12 +298,12 @@ func (s *mspan) sweep(preserve bool) bool {
 	}
 
 	// Count the number of free objects in this span.
-	nalloc := uint16(s.countAlloc())
+	nalloc := uint16(s.countAlloc()) // 计算已分配的对象数量
 	if spc.sizeclass() == 0 && nalloc == 0 {
 		s.needzero = 1
 		freeToHeap = true
 	}
-	nfreed := s.allocCount - nalloc // 计算空闲的object数量
+	nfreed := s.allocCount - nalloc // 计算本次释放的object数量. s.allocCount为释放前使用的对象数量，为释放后的对象数量，相减就是本次要释放的对象数量
 	if nalloc > s.allocCount {
 		print("runtime: nelems=", s.nelems, " nalloc=", nalloc, " previous allocCount=", s.allocCount, " nfreed=", nfreed, "\n")
 		throw("sweep increased allocation count")
@@ -318,8 +318,8 @@ func (s *mspan) sweep(preserve bool) bool {
 
 	// gcmarkBits becomes the allocBits.
 	// get a fresh cleared gcmarkBits in preparation for next GC
-	// gcmarkBits变成allocBits.
-	// 获取一个新的gcmarkBits用于下一次GC
+	// gcmarkBits变成allocBits。这里的操作意味着快速的把mark阶段标记的bitmap替换了用于内存分配的bitmap，同时也就清扫了没有标记的对象的bitmap中的bit位
+	// 获取一个新的gcmarkBits用于下一轮GC的mark阶段
 	s.allocBits = s.gcmarkBits
 	s.gcmarkBits = newMarkBits(s.nelems)
 
@@ -341,11 +341,11 @@ func (s *mspan) sweep(preserve bool) bool {
 		// Serialization point.
 		// At this point the mark bits are cleared and allocation ready
 		// to go so release the span.
-		atomic.Store(&s.sweepgen, sweepgen)
+		atomic.Store(&s.sweepgen, sweepgen) // 标记span为“清扫过”状态
 	}
 
 	if nfreed > 0 && spc.sizeclass() != 0 {
-		c.local_nsmallfree[spc.sizeclass()] += uintptr(nfreed)             // 记录空闲object的数量
+		c.local_nsmallfree[spc.sizeclass()] += uintptr(nfreed)             // 累计释放的object的数量
 		res = mheap_.central[spc].mcentral.freeSpan(s, preserve, wasempty) // 释放span给mcentral或者mheap
 		// MCentral_FreeSpan updates sweepgen
 	} else if freeToHeap { // 如果是大对象,则直接返还给mheap
@@ -369,16 +369,16 @@ func (s *mspan) sweep(preserve bool) bool {
 			s.limit = 0 // prevent mlookup from finding this span
 			sysFault(unsafe.Pointer(s.base()), size)
 		} else {
-			mheap_.freeSpan(s, 1)
+			mheap_.freeSpan(s, 1) // 返还给mheap
 		}
 		c.local_nlargefree++
 		c.local_largefree += size
 		res = true
 	}
-	if !res { // res==true表示span返还给mheap了
+	if !res { // res==true表示span返还给mheap了,已经不使用了
 		// The span has been swept and is still in-use, so put
 		// it on the swept in-use list.
-		mheap_.sweepSpans[sweepgen/2%2].push(s) // span被sweep后如果还是处于in-use状态，那么把他放到清扫过的sweepSpans链表里
+		mheap_.sweepSpans[sweepgen/2%2].push(s) // span被sweep后如果还是处于in-use状态，那么把它放到清扫过的sweepSpans链表里
 	}
 	return res
 }

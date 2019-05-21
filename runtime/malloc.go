@@ -616,7 +616,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// assistG is the G to charge for this allocation, or nil if
 	// GC is not currently active.
 	var assistG *g
-	if gcBlackenEnabled != 0 {
+	if gcBlackenEnabled != 0 { // 如果可以开启辅助标记
 		// Charge the current user G for this allocation.
 		assistG = getg()
 		if assistG.m.curg != nil {
@@ -802,7 +802,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// All slots hold nil so no scanning is needed.
 	// This may be racing with GC so do it atomically if there can be
 	// a race marking the bit.
-	if gcphase != _GCoff {
+	if gcphase != _GCoff { // 如果在标记阶段分配的对象则直接标记为黑色
 		gcmarknewobject(uintptr(x), size, scanSize)
 	}
 
