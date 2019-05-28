@@ -201,7 +201,8 @@ func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {
 // and negates them so that ctz (count trailing zeros) instructions
 // can be used. It then places these 8 bytes into the cached 64 bit
 // s.allocCache.
-// 重新移动s.allocCache指向下一个64位(8字节)的allocBit
+// 重新移动s.allocCache指向s.allocBits上以whichByte开始位置的8个字节
+// 由于bitmap区域和arena区域的映射关系是以arena_start地址处向相反方向映射的，在函数里对allocBits进行了反转得到了allocCache，以便可以用ctz指令标记对象被使用
 func (s *mspan) refillAllocCache(whichByte uintptr) {
 	bytes := (*[8]uint8)(unsafe.Pointer(s.allocBits.bytep(whichByte)))
 	aCache := uint64(0)

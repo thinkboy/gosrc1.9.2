@@ -24,7 +24,7 @@ import (
 type mstats struct {
 	// General statistics.
 	alloc       uint64 // bytes allocated and not yet freed
-	total_alloc uint64 // bytes allocated (even if freed)
+	total_alloc uint64 // 历史分配过的内存字节数总和 // bytes allocated (even if freed)
 	sys         uint64 // bytes obtained from system (should be sum of xxx_sys below, no locking, approximate)
 	nlookup     uint64 // number of pointer lookups
 	nmalloc     uint64 // number of mallocs
@@ -36,9 +36,9 @@ type mstats struct {
 	// Like MemStats, heap_sys and heap_inuse do not count memory
 	// in manually-managed spans.
 	heap_alloc    uint64 // bytes allocated and not yet freed (same as alloc above)
-	heap_sys      uint64 // virtual address space obtained from system for GC'd heap
-	heap_idle     uint64 // mheap中空闲的字节大小 //bytes in idle spans
-	heap_inuse    uint64 // 当前从mheap里分配出去的字节数 // bytes in _MSpanInUse spans
+	heap_sys      uint64 // mheap里面从系统获取到的虚拟地址空间字节大小（堆内存+栈内存） // virtual address space obtained from system for GC'd heap
+	heap_idle     uint64 // mheap中空闲的字节数，也就是未分配出去的字节数 //bytes in idle spans
+	heap_inuse    uint64 // 当前从mheap里分配出去的字节数，也就是进程正在使用的内存字节数 // bytes in _MSpanInUse spans
 	heap_released uint64 // bytes released to the os
 	heap_objects  uint64 // 当前从mheap里分配出去的对象数量 //total number of allocated objects
 
@@ -139,6 +139,7 @@ type mstats struct {
 	//
 	// Whenever this is updated, call traceHeapAlloc() and
 	// gcController.revise().
+	// 分配出去的，但未被使用的字节数
 	heap_live uint64
 
 	// heap_scan is the number of bytes of "scannable" heap. This

@@ -38,9 +38,14 @@ func (c *mcentral) init(spc spanClass) {
 
 // Allocate a span to use in an MCache.
 // 分配一个span给mcache使用
+// 分配给mcache的span仍然存在于mcentral.empty链表里
+// 分配过程:
+//   1.尝试从mcentral.nonempty链表里获取
+//   2.尝试从mcentral.empty链表里获取
+//   3.尝试从mheap里获取
 func (c *mcentral) cacheSpan() *mspan {
 	// Deduct credit for this span allocation and sweep if necessary.
-	spanBytes := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) * _PageSize
+	spanBytes := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) * _PageSize // 要分配的span的大小
 	deductSweepCredit(spanBytes, 0)
 
 	lock(&c.lock)
@@ -67,15 +72,16 @@ retry:
 			continue
 		}
 		// we have a nonempty span that does not require sweeping, allocate from it
+		// c.nonempty里有span的话就从c.nonempty里取出来放到c.empty里
 		c.nonempty.remove(s)
 		c.empty.insertBack(s)
 		unlock(&c.lock)
 		goto havespan
 	}
-	// 尝试从emply列表里清理出一个可用的span
+	// 尝试从empty列表里清理出一个可用的span
 	for s = c.empty.first; s != nil; s = s.next {
 		// 需要清理的span
-		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) { // TODO 不会把mcache里的span也拿到？这里似乎是待gc清理的判断
+		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) {
 			// we have an empty span that requires sweeping,
 			// sweep it and see if we can free some space in it
 			c.empty.remove(s)
@@ -108,7 +114,7 @@ retry:
 	unlock(&c.lock)
 
 	// Replenish central list if empty.
-	// 两个链表都没有可用span，则扩张
+	// 两个链表都没有可用span，则从mheap里获取一个
 	s = c.grow()
 	if s == nil {
 		return nil
@@ -131,8 +137,8 @@ havespan:
 	// Assume all objects from this span will be allocated in the
 	// mcache. If it gets uncached, we'll adjust this.
 	atomic.Xadd64(&c.nmalloc, int64(n))
-	usedBytes := uintptr(s.allocCount) * s.elemsize
-	atomic.Xadd64(&memstats.heap_live, int64(spanBytes)-int64(usedBytes)) // 计算并记录未被分配使用的bytes大小
+	usedBytes := uintptr(s.allocCount) * s.elemsize                       // span上面已被使用的字节数
+	atomic.Xadd64(&memstats.heap_live, int64(spanBytes)-int64(usedBytes)) // 计算并记录未被使用的字节数
 	if trace.enabled {
 		// heap_live changed.
 		traceHeapAlloc()
@@ -231,9 +237,8 @@ func (c *mcentral) freeSpan(s *mspan, preserve bool, wasempty bool) bool {
 }
 
 // grow allocates a new empty span from the heap and initializes it for c's size class.
-// 内存按页增长
-// 从这里开始转换为page(也就是页的概念)进行内存分配，是因为mheap是对应系统的内存管理的，系统内存管理是通过分页管理的
-// 分配的npages的span的内存大小大于n倍的单个对象的大小(n的范围从个位数到十位数不等)
+// 内存按pase size增长。
+// 从这里开始转换为page(也就是内存页的概念)进行内存分配，是因为mheap是对应系统的内存管理的，系统内存管理是通过分页管理的。
 func (c *mcentral) grow() *mspan {
 	npages := uintptr(class_to_allocnpages[c.spanclass.sizeclass()]) // 内存页数
 	size := uintptr(class_to_size[c.spanclass.sizeclass()])          // 每个对象的大小

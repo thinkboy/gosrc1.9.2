@@ -61,7 +61,7 @@ type mheap struct {
 	// This is backed by a reserved region of the address space so
 	// it can grow without moving. The memory up to len(spans) is
 	// mapped. cap(spans) indicates the total reserved memory.
-	// spans是全局的虚拟地址跟page的映射关系表，数组的索引就是page id，如果mspan的元素大小有2个page则有2个数组下角标指向同一个mspan
+	// spans就是spans区域的各个指针
 	spans []*mspan
 
 	// sweepSpans contains two mspan stacks: one of swept in-use
@@ -134,7 +134,7 @@ type mheap struct {
 	// The heap is grown using a linear allocator that allocates
 	// from the block [arena_alloc, arena_end). arena_alloc is
 	// often, but *not always* equal to arena_used.
-	arena_alloc uintptr
+	arena_alloc uintptr // 指向从arena区域已经分配的末尾地址，即未分配区域的起始地址
 	arena_end   uintptr // 指向arena区域尾部指针
 
 	// arena_reserved indicates that the memory [arena_alloc,
@@ -266,7 +266,7 @@ type mspan struct {
 	// allocCache may contain bits beyond s.nelems; the caller must ignore
 	// these.
 	// allocCache是allocBits的一段(所有叫cache)
-	// allocCache 肯能包含的bit数量超过s.nelems，调用者无视就好。
+	// allocCache 可能包含的bit数量超过s.nelems，调用者无视就好。
 	// allocCache按位来使用，每一位为0代表已经有一个对象被使用，每使用一个对象就allocCache>>1
 	// allocCache初始化值为二进制: 11111111 11111111 11111111 11111111 11111111 11111111 11111111 11111111
 	// 当使用一个对象后的二进制:    01111111 11111111 11111111 11111111 11111111 11111111 11111111 11111111
@@ -308,7 +308,7 @@ type mspan struct {
 	divMul      uint16     // for divide by elemsize - divMagic.mul
 	baseMask    uint16     // if non-0, elemsize is a power of 2, & this will get object allocation base
 	allocCount  uint16     // 当前分配的对象数量 //number of allocated objects
-	spanclass   spanClass  // size class and noscan (uint8)
+	spanclass   spanClass  // spanClass由8个bit位，前7个bit位表示sizeClass，第8位表示noscan // size class and noscan (uint8)
 	incache     bool       // 被mcache使用标记
 	state       mSpanState // mspaninuse etc
 	needzero    uint8      // needs to be zeroed before allocation
@@ -317,7 +317,7 @@ type mspan struct {
 	elemsize    uintptr    // 该span下的object的字节大小(不同sizeclass有不同的大小) // computed from sizeclass or from npages
 	unusedsince int64      // first time spotted by gc in mspanfree state
 	npreleased  uintptr    // number of pages released to the os
-	limit       uintptr    // span的内存末尾指针 // end of data in span
+	limit       uintptr    // span的内存末尾指针，每个分配出来的span并不一定刚好容纳指定大小的对象数量，总有一些字节不满足一个对象大小，因此有limit指向span区域的可被分配的末尾地址 // end of data in span
 	speciallock mutex      // guards specials list
 	specials    *special   // 特殊的span，来源于外部的调用或者pprof相关产生，并非runtime主流程用到 //linked list of special records sorted by offset.
 }
@@ -369,6 +369,7 @@ func recordspan(vh unsafe.Pointer, p unsafe.Pointer) {
 // noscan spanClass contains only noscan objects, which do not contain
 // pointers and thus do not need to be scanned by the garbage
 // collector.
+// spanClass由8个bit位，前7个bit位表示sizeClass，第8位表示noscan
 type spanClass uint8
 
 const (
@@ -696,18 +697,18 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 		// Record span info, because gc needs to be
 		// able to map interior pointer to containing span.
 		atomic.Store(&s.sweepgen, h.sweepgen)
-		h.sweepSpans[h.sweepgen/2%2].push(s) // 添加到清扫过的链表里，待gc mark时找到 // Add to swept in-use list.
+		h.sweepSpans[h.sweepgen/2%2].push(s) // 添加到清扫过的链表里，为下一轮GC做扫描准备 // Add to swept in-use list.
 		s.state = _MSpanInUse
 		s.allocCount = 0
 		s.spanclass = spanclass
-		if sizeclass := spanclass.sizeclass(); sizeclass == 0 {
+		if sizeclass := spanclass.sizeclass(); sizeclass == 0 { // sizeclass==0说明是大对象
 			s.elemsize = s.npages << _PageShift
 			s.divShift = 0
 			s.divMul = 0
 			s.divShift2 = 0
 			s.baseMask = 0
-		} else {
-			s.elemsize = uintptr(class_to_size[sizeclass]) // 计算小对象大小
+		} else { // 小对象
+			s.elemsize = uintptr(class_to_size[sizeclass])
 			m := &class_to_divmagic[sizeclass]
 			s.divShift = m.shift
 			s.divMul = m.mul
@@ -717,8 +718,8 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 
 		// update stats, sweep lists
 		h.pagesInUse += uint64(npage)
-		// 小对象取用的span被放到central.empty链表
-		// 而大对象所用的span被放到heap.busy里
+		// 小对象取用的span被放到mcentral.empty链表
+		// 而大对象所用的span被放到mheap.busy或者mheap.busylarge里
 		if large {
 			memstats.heap_objects++
 			mheap_.largealloc += uint64(s.elemsize)
@@ -726,9 +727,9 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 			atomic.Xadd64(&memstats.heap_live, int64(npage<<_PageShift))
 			// Swept spans are at the end of lists.
 			if s.npages < uintptr(len(h.busy)) {
-				h.busy[s.npages].insertBack(s)
+				h.busy[s.npages].insertBack(s) // 128 pageSize以下的放到h.busy里
 			} else {
-				h.busylarge.insertBack(s)
+				h.busylarge.insertBack(s) //128 pageSize以上的放到h.busylarge里
 			}
 		}
 	}
@@ -754,7 +755,7 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 	return s
 }
 
-// 分配指定npage页数量,指定sizeClass的mspan
+// 分配指定npage页数量
 func (h *mheap) alloc(npage uintptr, spanclass spanClass, large bool, needzero bool) *mspan {
 	// Don't do any operations that lock the heap on the G stack.
 	// It might trigger stack growth, and the stack growth code needs
@@ -814,7 +815,9 @@ func (h *mheap) allocManual(npage uintptr, stat *uint64) *mspan {
 // The returned span has been removed from the
 // free list, but its state is still MSpanFree.
 // 分配指定page size的Span
-// 调用此函数时mheap一定被锁了
+// 1。先尝试从1~128page size的h.free链表里获取
+// 2。如果没有再尝试从h.freelarge树堆里获取一个足够page size的span（有可能分配一个大于npage的）
+// 3。如果拿到的span超出npage的页数，则拆分出来两个span，将刚好等于npage的返回，多出来的span返还给mheap
 func (h *mheap) allocSpanLocked(npage uintptr, stat *uint64) *mspan {
 	var list *mSpanList
 	var s *mspan
@@ -831,11 +834,9 @@ func (h *mheap) allocSpanLocked(npage uintptr, stat *uint64) *mspan {
 		}
 	}
 	// Best fit in list of large spans.
-	// h.free没有的话，就试页数超过128的超大span
-	s = h.allocLarge(npage) // allocLarge removed s from h.freelarge for us
-	// 还没有就得从系统申请了
-	if s == nil {
-		if !h.grow(npage) {
+	s = h.allocLarge(npage) // 从h.freelarge获取一个大对象span(有可能分配一个大于npage的span) // allocLarge removed s from h.freelarge for us
+	if s == nil {           // 还没有就得从系统申请了
+		if !h.grow(npage) { // 分配一个至少是1MB的span
 			return nil
 		}
 		s = h.allocLarge(npage)
@@ -858,8 +859,7 @@ HaveSpan:
 		s.npreleased = 0
 	}
 
-	// 如果该span多余预期,则创建新的span管理多余的page,放到heap里
-	// 如果是从系统分配出来的mspan，那一定是大于128 page大小的，所以当大于需要的npage数量的时候在这里拆出来两个mspan，一个用于分配出去，一个返还给mheap
+	// 如果该span多余预期page size,则创建新的span管理多余的page,放到heap里，满足预期大小的span分配出去
 	if s.npages > npage {
 		// Trim extra and put it back in the heap.
 		t := (*mspan)(h.spanalloc.alloc())
@@ -880,7 +880,7 @@ HaveSpan:
 	s.unusedsince = 0
 
 	p := (s.base() - h.arena_start) >> _PageShift
-	for n := uintptr(0); n < npage; n++ {
+	for n := uintptr(0); n < npage; n++ { // spans区域的每个span指针与arena区域的每一页(Page)关联
 		h.spans[p+n] = s
 	}
 
@@ -914,7 +914,7 @@ func (h *mheap) allocLarge(npage uintptr) *mspan {
 // returning whether it worked.
 //
 // h must be locked.
-// 向系统申请内存，最小1MB
+// 向系统申请内存，至少1MB
 func (h *mheap) grow(npage uintptr) bool {
 	// Ask for a big chunk, to reduce the number of mappings
 	// the operating system needs to track; also amortizes
@@ -946,14 +946,13 @@ func (h *mheap) grow(npage uintptr) bool {
 	s := (*mspan)(h.spanalloc.alloc())
 	s.init(uintptr(v), ask>>_PageShift)
 	p := (s.base() - h.arena_start) >> _PageShift // 计算出来当前分配的span内存属于arena区域的第p页
-	for i := p; i < p+s.npages; i++ {             // 在h.spans里把每个page与所属span映射。gc mark时通过对象地址计算出page从而找到span
+	for i := p; i < p+s.npages; i++ {             // spans区域的每个span指针与arena区域的每一页(Page)关联
 		h.spans[i] = s
 	}
 	atomic.Store(&s.sweepgen, h.sweepgen)
 	s.state = _MSpanInUse
 	h.pagesInUse += uint64(s.npages)
 	// 放到mheap.free或mheap.freelarge链表里
-	//
 	h.freeSpanLocked(s, false, true, 0)
 	return true
 }
