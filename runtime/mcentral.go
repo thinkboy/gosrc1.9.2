@@ -58,8 +58,7 @@ retry:
 	// 从nonempty列表里找可用的span
 	var s *mspan
 	for s = c.nonempty.first; s != nil; s = s.next {
-		// 需要清理的span
-		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) {
+		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) { // 如果GC已经开始一轮循环了，当前span还没被清理，则提前清理
 			c.nonempty.remove(s)
 			c.empty.insertBack(s)
 			unlock(&c.lock)
@@ -80,8 +79,7 @@ retry:
 	}
 	// 尝试从empty列表里清理出一个可用的span
 	for s = c.empty.first; s != nil; s = s.next {
-		// 需要清理的span
-		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) {
+		if s.sweepgen == sg-2 && atomic.Cas(&s.sweepgen, sg-2, sg-1) { // 如果GC已经开始一轮循环了，当前span还没被清理，则提前清理
 			// we have an empty span that requires sweeping,
 			// sweep it and see if we can free some space in it
 			c.empty.remove(s)
@@ -195,6 +193,7 @@ func (c *mcentral) uncacheSpan(s *mspan) {
 // If preserve=true, it does not move s (the caller
 // must take care of it).
 // 如果返还给heap则方法返回true
+// wasempty==true表示mspan里没有空闲对象
 func (c *mcentral) freeSpan(s *mspan, preserve bool, wasempty bool) bool {
 	if s.incache {
 		throw("freeSpan given cached span")

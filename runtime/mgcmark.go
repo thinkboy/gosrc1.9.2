@@ -1284,7 +1284,7 @@ func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork
 			return
 		}
 		// mbits.setMarked() // Avoid extra call overhead with manual inlining.
-		atomic.Or8(mbits.bytep, mbits.mask) // 设置对象所在的span中的gcmarkBits对应的bit为1
+		atomic.Or8(mbits.bytep, mbits.mask) // 设置对象所在的span中的gcmarkBits对应的bit为1，即标记该位置的对象是存活的。
 		// If this is a noscan object, fast-track it to black
 		// instead of greying it.
 		if span.spanclass.noscan() {

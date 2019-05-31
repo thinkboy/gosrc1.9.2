@@ -33,8 +33,8 @@ type mheap struct {
 	free [_MaxMHeapList]mSpanList //free lists of given length up to _MaxMHeapList
 	// 页数大于128的闲置span链表,该链表采用"树堆(tream)"数据结构存储
 	freelarge mTreap                   //free treap of length >= _MaxMHeapList
-	busy      [_MaxMHeapList]mSpanList // busy lists of large spans of given length
-	busylarge mSpanList                // busy lists of large spans length >= _MaxMHeapList
+	busy      [_MaxMHeapList]mSpanList // 保存分配出去的<=128page size的大对象mspan //busy lists of large spans of given length
+	busylarge mSpanList                // 保存分配出去的>128page size的大对象mspan // busy lists of large spans length >= _MaxMHeapList
 	sweepgen  uint32                   // sweep generation, see comment in mspan
 	sweepdone uint32                   // 所有span被清理完的标记，1为完成 0为开始sweep // all spans are swept
 	sweepers  uint32                   // 活跃的sweepers的数量 // number of active sweepone calls
@@ -299,7 +299,7 @@ type mspan struct {
 	gcmarkBits *gcBits
 
 	// sweep generation:
-	// if sweepgen == h->sweepgen - 2, the span needs sweeping
+	// if sweepgen == h->sweepgen - 2, the span needs sweeping // 此状态表示GC已经开始新一轮还未结束，在GC开始的时候会进行h.sweepgen+2的操作，因此此等式表示正在等待本轮GC的扫描
 	// if sweepgen == h->sweepgen - 1, the span is currently being swept
 	// if sweepgen == h->sweepgen, the span is swept and ready to use
 	// h->sweepgen is incremented by 2 after every GC
@@ -718,7 +718,7 @@ func (h *mheap) alloc_m(npage uintptr, spanclass spanClass, large bool) *mspan {
 
 		// update stats, sweep lists
 		h.pagesInUse += uint64(npage)
-		// 小对象取用的span被放到mcentral.empty链表
+		// 小对象所用的span被放到mcentral.empty链表
 		// 而大对象所用的span被放到mheap.busy或者mheap.busylarge里
 		if large {
 			memstats.heap_objects++
@@ -904,7 +904,7 @@ func (h *mheap) isLargeSpan(npages uintptr) bool {
 
 // allocLarge allocates a span of at least npage pages from the treap of large spans.
 // Returns nil if no such span currently exists.
-// 分配一个大于128页数的span
+// 从freelarge中分配一个大于128页数的span
 func (h *mheap) allocLarge(npage uintptr) *mspan {
 	// Search treap for smallest span with >= npage pages.
 	return h.freelarge.remove(npage)

@@ -1063,7 +1063,7 @@ func GC() {
 	// Prevent the GC phase or cycle count from changing.
 	lock(&work.sweepWaiters.lock)
 	n := atomic.Load(&work.cycles)
-	if gcphase == _GCmark {
+	if gcphase == _GCmark { // 如果已经在mark阶段，则等待
 		// Wait until sweep termination, mark, and mark
 		// termination of cycle N complete.
 		gp.schedlink = work.sweepWaiters.head
@@ -2016,13 +2016,14 @@ func gcMark(start_time int64) {
 	}
 }
 
+// 唤醒后台清理任务
 func gcSweep(mode gcMode) {
 	if gcphase != _GCoff {
 		throw("gcSweep being done but phase is not GCoff")
 	}
 
 	lock(&mheap_.lock)
-	mheap_.sweepgen += 2 // 交换mheap_.sweepSpans里的2个数组元素,把“清扫过”的spans切换为“未清扫”
+	mheap_.sweepgen += 2 // 标记下一轮GC开始。(1.此时mheap_.sweepSpans里的2个数组元素也交换了位置,把“清扫过”的spans切换为“未清扫”。2. mspan.sweepgen==mheap.sweepgen-2)
 	mheap_.sweepdone = 0 // 标记sweep开始
 	if mheap_.sweepSpans[mheap_.sweepgen/2%2].index != 0 {
 		// We should have drained this list during the last

@@ -324,7 +324,7 @@ func (s *mspan) sweep(preserve bool) bool {
 	s.gcmarkBits = newMarkBits(s.nelems)
 
 	// Initialize alloc bits cache.
-	s.refillAllocCache(0) // 初始化重置s.allocCache
+	s.refillAllocCache(0) // 重置s.allocCache
 
 	// We need to set s.sweepgen = h.sweepgen only when all blocks are swept,
 	// because of the potential for a concurrent free/SetFinalizer.
