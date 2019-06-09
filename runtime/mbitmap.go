@@ -86,7 +86,7 @@ const (
 	bitScan    = 1 << 4
 
 	heapBitsShift   = 1                     // shift offset between successive bitPointer or bitScan entries
-	heapBitmapScale = sys.PtrSize * (8 / 2) // number of data bytes described by one heap bitmap byte
+	heapBitmapScale = sys.PtrSize * (8 / 2) // 64位系统中heapBitmapScale==32,即按8字节内存对齐的话可以表示32个对象 // number of data bytes described by one heap bitmap byte
 
 	// all scan/pointer bits in a byte
 	bitScanAll    = bitScan | bitScan<<heapBitsShift | bitScan<<(2*heapBitsShift) | bitScan<<(3*heapBitsShift)
@@ -144,7 +144,7 @@ func subtract1(p *byte) *byte {
 // Don't call this directly. Call mheap.setArenaUsed.
 //
 //go:nowritebarrier
-func (h *mheap) mapBits(arena_used uintptr) {
+func (h *mheap) mapBits(arena_used uintptr) { // 通过arena区域被使用的内存映射bitmap区域内存
 	// Caller has added extra mappings to the arena.
 	// Add extra mappings of bitmap words as needed.
 	// We allocate extra bitmap pieces in chunks of bitmapChunk.
@@ -165,6 +165,9 @@ func (h *mheap) mapBits(arena_used uintptr) {
 // The methods on heapBits take value receivers so that the compiler
 // can more easily inline calls to those methods and registerize the
 // struct fields independently.
+// heapBits表示在bitmap上的1字节与在arena区域的指针大小(8字节)的映射信息。
+// bitp表示在bitmap区域上的映射arena的那个字节，
+// TODO shift表示?
 type heapBits struct {
 	bitp  *uint8
 	shift uint32
@@ -179,18 +182,15 @@ type heapBits struct {
 // the address of the object in the heap.
 // We maintain one set of mark bits for allocation and one for
 // marking purposes.
-// markBits提供对heap中对象的标记位的访问。
-// bytep指向保持标记位的字节。
-// mask是一个具有单个位设置的字节，可以使用*bytep来查看该位是否已设置。
-// *m.byte＆m.mask！= 0表示标记位已设置。
-// index可以与span信息一起使用，以生成heap中对象的地址。
-// 我们维护一组标记位用于分配，一个用于标记目的。
+// markBits用于表示一个对象的在markBits里的信息。
+// 在markBits可以快速定位到某个对象。
 type markBits struct {
-	bytep *uint8
-	mask  uint8
-	index uintptr
+	bytep *uint8  // 表示对象的bit位所在的byte，bytep&mask运算才可以找出来是在byte的哪个bit位上
+	mask  uint8   // 用于找到对象所在byte的标记位的掩码,配合bytep使用的可以计算出是否有设置。
+	index uintptr // 表示在markBits里第index个对象
 }
 
+// 通过在allocBit上得到index标记位的对象信息，封装到markBits结构里
 //go:nosplit
 func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {
 	bytep, mask := s.allocBits.bitp(allocBitIndex)
@@ -202,7 +202,7 @@ func (s *mspan) allocBitsForIndex(allocBitIndex uintptr) markBits {
 // can be used. It then places these 8 bytes into the cached 64 bit
 // s.allocCache.
 // 重新移动s.allocCache指向s.allocBits上以whichByte开始位置的8个字节
-// 由于bitmap区域和arena区域的映射关系是以arena_start地址处向相反方向映射的，在函数里对allocBits进行了反转得到了allocCache，以便可以用ctz指令标记对象被使用
+// 在函数里对allocBits进行了反转得到了allocCache，以便可以用ctz指令标记对象被使用
 func (s *mspan) refillAllocCache(whichByte uintptr) {
 	bytes := (*[8]uint8)(unsafe.Pointer(s.allocBits.bytep(whichByte)))
 	aCache := uint64(0)
@@ -298,7 +298,7 @@ func markBitsForAddr(p uintptr) markBits {
 	return s.markBitsForIndex(objIndex)
 }
 
-// 通过span里的object的索引(index)找到markBits
+// 通过span里的object的索引(index)找到对象信息，并封装到markBits里
 func (s *mspan) markBitsForIndex(objIndex uintptr) markBits {
 	bytep, mask := s.gcmarkBits.bitp(objIndex)
 	return markBits{bytep, mask, objIndex}
@@ -310,7 +310,7 @@ func (s *mspan) markBitsForBase() markBits {
 
 // isMarked reports whether mark bit m is set.
 func (m markBits) isMarked() bool {
-	return *m.bytep&m.mask != 0
+	return *m.bytep&m.mask != 0 // 如果bit位上设置了1，表示对象被mark过了，则返回true
 }
 
 // setMarked sets the marked bit in the markbits, atomically. Some compilers
@@ -363,7 +363,7 @@ func (m *markBits) advance() {
 // The caller must have already checked that addr is in the range [mheap_.arena_start, mheap_.arena_used).
 //
 // nosplit because it is used during write barriers and must not be preempted.
-// 通过arena地址计算出对应的bitmap的位置,并封装到heapBits对象里
+// 通过arena地址计算出对应的bitmap区域的信息,并封装到heapBits对象里
 //go:nosplit
 func heapBitsForAddr(addr uintptr) heapBits {
 	// 2 bits per work, 4 pairs per byte, and a mask is hard coded.
@@ -390,8 +390,7 @@ func heapBitsForSpan(base uintptr) (hbits heapBits) {
 // refBase and refOff optionally give the base address of the object
 // in which the pointer p was found and the byte offset at which it
 // was found. These are used for error reporting.
-// 返回参数base指向对象地址
-// 如果参数p不是指向一个对象(比如在scanobject里，大于128KB的对象是被拆开的)则返回base==0。
+// 返回参数base指向的是对象起始地址
 func heapBitsForObject(p, refBase, refOff uintptr) (base uintptr, hbits heapBits, s *mspan, objIndex uintptr) {
 	arenaStart := mheap_.arena_start
 	if p < arenaStart || p >= mheap_.arena_used {
@@ -443,7 +442,7 @@ func heapBitsForObject(p, refBase, refOff uintptr) (base uintptr, hbits heapBits
 	if s.baseMask != 0 {
 		// optimize for power of 2 sized objects.
 		base = s.base()
-		base = base + (p-base)&uintptr(s.baseMask)
+		base = base + (p-base)&uintptr(s.baseMask) // 计算p指向地址所处的对象的起始地址。baseMask为计算掩码。
 		objIndex = (base - s.base()) >> s.divShift
 		// base = p & s.baseMask is faster for small spans,
 		// but doesn't work for large spans.
@@ -825,6 +824,7 @@ var oneBitCount = [256]uint8{
 // countAlloc returns the number of objects allocated in span s by
 // scanning the allocation bitmap.
 // TODO:(rlh) Use popcount intrinsic.
+// 计算对象数量。在gcmarkBits里设置的bit位的对象也是分配的对象。
 func (s *mspan) countAlloc() int {
 	count := 0
 	maxIndex := s.nelems / 8

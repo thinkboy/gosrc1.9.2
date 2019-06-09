@@ -502,9 +502,9 @@ type p struct {
 	palloc persistentAlloc // per-P to avoid mutex
 
 	// Per-P GC state
-	gcAssistTime     int64    // Nanoseconds in assistAlloc
-	gcBgMarkWorker   guintptr // 后台gc时运行mark工作的G,开启gc任务的时候设置的，schedule里寻找可执行G的时候优先找该G
-	gcMarkWorkerMode gcMarkWorkerMode
+	gcAssistTime     int64            // Nanoseconds in assistAlloc
+	gcBgMarkWorker   guintptr         // 后台gc时运行mark工作的G,开启gc任务的时候设置的，schedule里寻找可执行G的时候优先找该G
+	gcMarkWorkerMode gcMarkWorkerMode // 当前P下的标记工作模式
 
 	// gcw is this P's GC work buffer cache. The work buffer is
 	// filled by write barriers, drained by mutator assists, and

@@ -61,7 +61,7 @@ type mheap struct {
 	// This is backed by a reserved region of the address space so
 	// it can grow without moving. The memory up to len(spans) is
 	// mapped. cap(spans) indicates the total reserved memory.
-	// spans就是spans区域的各个指针
+	// spans就是spans区域的各个指针,每个指针指向1个page size，如果是某个mspan是管理的多个page size，则这里的多个mspan指针指向同一个mspan
 	spans []*mspan
 
 	// sweepSpans contains two mspan stacks: one of swept in-use
@@ -1576,6 +1576,8 @@ func (b *gcBits) bytep(n uintptr) *uint8 {
 
 // bitp returns a pointer to the byte containing bit n and a mask for
 // selecting that bit from *bytep.
+// 返回包含第n个对象所在的gcBits上的字节信息。
+// bytep是指定的字节，mask是n所在对应字节bit位的掩码。
 func (b *gcBits) bitp(n uintptr) (bytep *uint8, mask uint8) {
 	return b.bytep(n / 8), 1 << (n % 8)
 }
@@ -1624,7 +1626,7 @@ func (b *gcBitsArena) tryAlloc(bytes uintptr) *gcBits {
 // to be used for a span's mark bits.
 func newMarkBits(nelems uintptr) *gcBits {
 	blocksNeeded := uintptr((nelems + 63) / 64)
-	bytesNeeded := blocksNeeded * 8
+	bytesNeeded := blocksNeeded * 8 // 8个字节可以表示64个对象
 
 	// Try directly allocating from the current head arena.
 	head := (*gcBitsArena)(atomic.Loadp(unsafe.Pointer(&gcBitsArenas.next)))
@@ -1651,6 +1653,7 @@ func newMarkBits(nelems uintptr) *gcBits {
 	if p := gcBitsArenas.next.tryAlloc(bytesNeeded); p != nil {
 		// Put fresh back on the free list.
 		// TODO: Mark it "already zeroed"
+		// 把fresh放到链表头部
 		fresh.next = gcBitsArenas.free
 		gcBitsArenas.free = fresh
 		unlock(&gcBitsArenas.lock)
@@ -1718,11 +1721,13 @@ func nextMarkBitArenaEpoch() {
 
 // newArenaMayUnlock allocates and zeroes a gcBits arena.
 // The caller must hold gcBitsArena.lock. This may temporarily release it.
+// 分配一个bitmap块
+// 链表中有则从链表中获取，链表中没有则从系统分配一个
 func newArenaMayUnlock() *gcBitsArena {
 	var result *gcBitsArena
-	if gcBitsArenas.free == nil {
+	if gcBitsArenas.free == nil { // 如果链表中没有,则从系统分配
 		unlock(&gcBitsArenas.lock)
-		result = (*gcBitsArena)(sysAlloc(gcBitsChunkBytes, &memstats.gc_sys))
+		result = (*gcBitsArena)(sysAlloc(gcBitsChunkBytes, &memstats.gc_sys)) //从系统里分配gcBitsChunkBytes(64KB)大小
 		if result == nil {
 			throw("runtime: cannot allocate memory")
 		}

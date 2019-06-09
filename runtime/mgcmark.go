@@ -414,8 +414,8 @@ func markrootSpans(gcw *gcWork, shard int) {
 //
 // This must be called with preemption enabled.
 // 执行辅助GC工作.
-// 参数gp必须是用户的goroutine.
-// G必须被抢占时才调用.
+// 参数gp一定是用户的goroutine.
+// 必须在允许被抢占时才调用,也就是利用可被抢占的时机做一些辅助标记工作。
 // 在该方法中主要依靠系数gcController.assistWorkPerByte、gcController.assistBytesPerWork计算辅助扫描的大小，最终计算出scanWork大小进行标记
 func gcAssistAlloc(gp *g) {
 	// Don't assist in non-preemptible contexts. These are
@@ -870,7 +870,7 @@ func scanframeworker(frame *stkframe, cache *pcvalueCache, gcw *gcWork) {
 type gcDrainFlags int
 
 const (
-	gcDrainUntilPreempt gcDrainFlags = 1 << iota
+	gcDrainUntilPreempt gcDrainFlags = 1 << iota // 表示标记过程中允许被抢占
 	gcDrainNoBlock
 	gcDrainFlushBgCredit
 	gcDrainIdle
@@ -905,10 +905,10 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 	}
 
 	gp := getg().m.curg
-	preemptible := flags&gcDrainUntilPreempt != 0
+	preemptible := flags&gcDrainUntilPreempt != 0 // 是否扫描时允许抢占
 	blocking := flags&(gcDrainUntilPreempt|gcDrainIdle|gcDrainNoBlock) == 0
 	flushBgCredit := flags&gcDrainFlushBgCredit != 0
-	idle := flags&gcDrainIdle != 0
+	idle := flags&gcDrainIdle != 0 // 是否空闲时标记模式
 
 	initScanWork := gcw.scanWork
 	// idleCheck is the scan work at which to perform the next
@@ -923,8 +923,8 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 			if job >= work.markrootJobs {
 				break
 			}
-			markroot(gcw, job) // 标记指定job根对象
-			if idle && pollWork() {
+			markroot(gcw, job)      // 标记指定job根对象
+			if idle && pollWork() { // 空闲标记模式的话，时刻检查是否有工作任务，如果有则break跳出
 				goto done
 			}
 		}
@@ -972,7 +972,7 @@ func gcDrain(gcw *gcWork, flags gcDrainFlags) {
 			idleCheck -= gcw.scanWork
 			gcw.scanWork = 0
 
-			if idle && idleCheck <= 0 {
+			if idle && idleCheck <= 0 { // 空闲标记模式的话，时刻检查是否有工作任务，如果有则break跳出
 				idleCheck += idleCheckThreshold
 				if pollWork() {
 					break
@@ -1134,7 +1134,7 @@ func scanobject(b uintptr, gcw *gcWork) {
 	// b is either the beginning of an object, in which case this
 	// is the size of the object to scan, or it points to an
 	// oblet, in which case we compute the size to scan below.
-	hbits := heapBitsForAddr(b) // 计算出bitmap的位置
+	hbits := heapBitsForAddr(b) // 计算出在bitmap中的位置
 	s := spanOfUnchecked(b)
 	n := s.elemsize
 	if n == 0 {
@@ -1161,7 +1161,7 @@ func scanobject(b uintptr, gcw *gcWork) {
 			// these will be marked as "no more pointers",
 			// so we'll drop out immediately when we go to
 			// scan those.
-			// 把一个对象分块放到标记队列里
+			// 把一个oblet放到标记队列里
 			for oblet := b + maxObletBytes; oblet < s.base()+s.elemsize; oblet += maxObletBytes {
 				if !gcw.putFast(oblet) { // 先仅尝试放到局部队列的wbuf1里
 					gcw.put(oblet) // 如果失败则再尝试放到局部wbuf1->wbuf2->全局队列
@@ -1181,8 +1181,8 @@ func scanobject(b uintptr, gcw *gcWork) {
 	}
 
 	// 每8个字节一次for循环。
-	// 在bitmap的组成结构里每个byte里有2个bits表示arena区域里的对应位置的指针大小，也就是8字节，
-	// 所以在这里其实等于是按照bitmap里的标记逐个check的。
+	// 在bitmap区域的组成结构里每个byte里有2个bits表示arena区域里的对应位置的指针大小，也就是8字节，
+	// 所以在这里其实等于是按照bitmap里的顺序逐个check的。
 	var i uintptr
 	for i = 0; i < n; i += sys.PtrSize {
 		// Find bits for this word.
@@ -1196,10 +1196,10 @@ func scanobject(b uintptr, gcw *gcWork) {
 		// in the type bit for the one word. The only one-word objects
 		// are pointers, or else they'd be merged with other non-pointer
 		// data into larger allocations.
-		if i != 1*sys.PtrSize && bits&bitScan == 0 {
+		if i != 1*sys.PtrSize && bits&bitScan == 0 { // 有标记不在扫描,表示没有指针在该对象里，则结束该对象的扫描。
 			break // no more pointers in this object
 		}
-		if bits&bitPointer == 0 {
+		if bits&bitPointer == 0 { // 如果不是指针不需要变灰,继续往下扫描
 			continue // not a pointer
 		}
 
@@ -1211,7 +1211,7 @@ func scanobject(b uintptr, gcw *gcWork) {
 		// Check if it points into heap and not back at the current object.
 		if obj != 0 && arena_start <= obj && obj < arena_used && obj-b >= n { // check到达对象末尾了就把对象变为灰色。
 			// Mark the object.
-			if obj, hbits, span, objIndex := heapBitsForObject(obj, b, i); obj != 0 { // 这里返回的obj对象指向的是object的起始地址
+			if obj, hbits, span, objIndex := heapBitsForObject(obj, b, i); obj != 0 { // 此时obj指向的是所在对象的起始地址。
 				greyobject(obj, b, i, hbits, span, gcw, objIndex) // 把对象变为灰色,并放到标记队列里
 			}
 		}
@@ -1246,7 +1246,7 @@ func greyobject(obj, base, off uintptr, hbits heapBits, span *mspan, gcw *gcWork
 	if obj&(sys.PtrSize-1) != 0 {
 		throw("greyobject: obj not pointer-aligned")
 	}
-	mbits := span.markBitsForIndex(objIndex)
+	mbits := span.markBitsForIndex(objIndex) // 通过对象在markBits的index得到一个markBits结构，mbits表示一个对象在markBits里的信息
 
 	if useCheckmark {
 		if !mbits.isMarked() {

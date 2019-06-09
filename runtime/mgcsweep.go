@@ -29,6 +29,7 @@ type sweepdata struct {
 // The world must be stopped. This ensures there are no sweeps in
 // progress.
 //
+// 确保所有span都被清除过了
 //go:nowritebarrier
 func finishsweep_m() {
 	// Sweeping must be complete before marking commences, so
@@ -298,8 +299,8 @@ func (s *mspan) sweep(preserve bool) bool {
 	}
 
 	// Count the number of free objects in this span.
-	nalloc := uint16(s.countAlloc()) // 计算已分配的对象数量
-	if spc.sizeclass() == 0 && nalloc == 0 {
+	nalloc := uint16(s.countAlloc())         // 计算mark后还在使用的对象数量
+	if spc.sizeclass() == 0 && nalloc == 0 { // 如果是大对象
 		s.needzero = 1
 		freeToHeap = true
 	}
@@ -324,7 +325,7 @@ func (s *mspan) sweep(preserve bool) bool {
 	s.gcmarkBits = newMarkBits(s.nelems)
 
 	// Initialize alloc bits cache.
-	s.refillAllocCache(0) // 重置s.allocCache
+	s.refillAllocCache(0) // 重置s.allocCache指向s.allocBits的起始位置
 
 	// We need to set s.sweepgen = h.sweepgen only when all blocks are swept,
 	// because of the potential for a concurrent free/SetFinalizer.

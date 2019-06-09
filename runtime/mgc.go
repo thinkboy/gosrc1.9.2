@@ -293,13 +293,14 @@ func setGCPhase(x uint32) {
 // workers and are distinguished by gcMarkWorkerMode.
 // 并发mark有4种不同的机制。
 // 一个是辅助标记，当分配内存的时候触发，并不是计划内的。
-// 其余的3个是在每个P下的mark任务里变更
+// 其余的3个是在每个P下的mark任务里，gcMarkWorkerMode表示在每个P的mark任务的工作模式。
 type gcMarkWorkerMode int
 
 const (
 	// gcMarkWorkerDedicatedMode indicates that the P of a mark
 	// worker is dedicated to running that mark worker. The mark
 	// worker should run without preemption.
+	// 全力参与标记模式,不允许被抢占
 	gcMarkWorkerDedicatedMode gcMarkWorkerMode = iota
 
 	// gcMarkWorkerFractionalMode indicates that a P is currently
@@ -308,12 +309,14 @@ const (
 	// integer. The fractional worker should run until it is
 	// preempted and will be scheduled to pick up the fractional
 	// part of GOMAXPROCS*gcGoalUtilization.
+	// 少量参与标记模式，只标记当前P本地的工作任务
 	gcMarkWorkerFractionalMode
 
 	// gcMarkWorkerIdleMode indicates that a P is running the mark
 	// worker because it has nothing else to do. The idle worker
 	// should run until it is preempted and account its time
 	// against gcController.idleMarkTime.
+	// 空闲P没有工作任务时，做一些标记工作
 	gcMarkWorkerIdleMode
 )
 
@@ -701,8 +704,7 @@ func (c *gcControllerState) findRunnableGCWorker(_p_ *p) *g {
 	if decIfPositive(&c.dedicatedMarkWorkersNeeded) { // 如果有需要标记的任务
 		// This P is now dedicated to marking until the end of
 		// the concurrent mark phase.
-		// 记录当前P开始被用于专用标记工作，直到并发标记阶段结束
-		_p_.gcMarkWorkerMode = gcMarkWorkerDedicatedMode
+		_p_.gcMarkWorkerMode = gcMarkWorkerDedicatedMode // 设置当前P开始被用于专用标记工作，直到并发标记阶段结束
 	} else {
 		if !decIfPositive(&c.fractionalMarkWorkersNeeded) {
 			// No more workers are need right now.
@@ -748,7 +750,7 @@ func (c *gcControllerState) findRunnableGCWorker(_p_ *p) *g {
 			atomic.Xaddint64(&c.fractionalMarkWorkersNeeded, +1)
 			return nil
 		}
-		_p_.gcMarkWorkerMode = gcMarkWorkerFractionalMode
+		_p_.gcMarkWorkerMode = gcMarkWorkerFractionalMode // 设置当前P可进行的标记模式：少量参与标记，其实就是只处理下P本地的
 	}
 
 	// Run the background mark worker
@@ -820,6 +822,7 @@ func gcSetTriggerRatio(triggerRatio float64) {
 	// Compute the next GC goal, which is when the allocated heap
 	// has grown by GOGC/100 over the heap marked by the last
 	// cycle.
+	// 计算下一轮的GC触发目标：通过上一轮的标记的堆内存大小以及GOGC/100参数计算
 	goal := ^uint64(0)
 	if gcpercent >= 0 {
 		goal = memstats.heap_marked + memstats.heap_marked*uint64(gcpercent)/100
@@ -1168,6 +1171,7 @@ const (
 // test returns true if the trigger condition is satisfied, meaning
 // that the exit condition for the _GCoff phase has been met. The exit
 // condition should be tested when allocating.
+// 判断是否满足GC条件
 func (t gcTrigger) test() bool {
 	if !memstats.enablegc || panicking != 0 {
 		return false
@@ -1179,19 +1183,19 @@ func (t gcTrigger) test() bool {
 		return false
 	}
 	switch t.kind {
-	case gcTriggerHeap:
+	case gcTriggerHeap: // 堆内存达到一定范围时
 		// Non-atomic access to heap_live for performance. If
 		// we are going to trigger on this, this thread just
 		// atomically wrote heap_live anyway and we'll see our
 		// own write.
 		return memstats.heap_live >= memstats.gc_trigger
-	case gcTriggerTime:
+	case gcTriggerTime: // GC定时触发时(强制GC)
 		if gcpercent < 0 {
 			return false
 		}
 		lastgc := int64(atomic.Load64(&memstats.last_gc_nanotime))
 		return lastgc != 0 && t.now-lastgc > forcegcperiod
-	case gcTriggerCycle:
+	case gcTriggerCycle: // 主动开启一轮GC(用户触发)
 		// t.n > work.cycles, but accounting for wraparound.
 		return int32(t.n-work.cycles) > 0
 	}
@@ -1364,6 +1368,9 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 // function because completion of concurrent mark is best-effort
 // anyway. Any work created by write barriers here will be cleaned up
 // by mark termination.
+// GC过程从mark 1过渡到mark 2阶段，再过渡到mark termination阶段。
+// 当所有的工作任务都执行完成后被调用。mark 1阶段包含root、全局work buffer、辅助work buffer、后台工作任务。
+// 但是无论如何可能还是会在每个P里有cache住的work buffer。因此在mark 2阶段禁用每个P的cache。
 func gcMarkDone() {
 top:
 	semacquire(&work.markDoneSema)
@@ -1390,7 +1397,7 @@ top:
 		// Flush and disable work caches.
 
 		// Disallow caching workbufs and indicate that we're in mark 2.
-		gcBlackenPromptly = true
+		gcBlackenPromptly = true // 表示从mark 1过渡到mark 2阶段。此时所有P下面的work buffer cache被禁用。
 
 		// Prevent completion of mark 2 until we've flushed
 		// cached workbufs.
@@ -1438,7 +1445,7 @@ top:
 		work.tMarkTerm = now
 		work.pauseStart = now
 		getg().m.preemptoff = "gcing"
-		systemstack(stopTheWorldWithSema) // 进入最终阶段进行sweep之前世界停止了(STW)
+		systemstack(stopTheWorldWithSema) // 进入Mark Termination阶段之前世界停止了(STW)
 		// The gcphase is _GCmark, it will transition to _GCmarktermination
 		// below. The important thing is that the wb remains active until
 		// all marking is complete. This includes writes made by the GC.
@@ -1448,11 +1455,11 @@ top:
 
 		// Disable assists and background workers. We must do
 		// this before waking blocked assists.
-		atomic.Store(&gcBlackenEnabled, 0) // 设置0，表示GC mark阶段结束
+		atomic.Store(&gcBlackenEnabled, 0) // 设置0，表示mark工作结束，不再需要辅助标记
 
 		// Wake all blocked assists. These will run when we
 		// start the world again.
-		gcWakeAllAssists()
+		gcWakeAllAssists() // 等待辅助标记工作任务结束
 
 		// Likewise, release the transition lock. Blocked
 		// workers and assists will run when we start the
@@ -1461,7 +1468,7 @@ top:
 
 		// endCycle depends on all gcWork cache stats being
 		// flushed. This is ensured by mark 2.
-		nextTriggerRatio := gcController.endCycle()
+		nextTriggerRatio := gcController.endCycle() // 计算下一次trigger比例
 
 		// Perform mark termination. This will restart the world.
 		// 完成mark最终步骤
@@ -1469,7 +1476,7 @@ top:
 	}
 }
 
-// gcMark结束，唤醒后台清理任务
+// Mark Termination阶段，唤醒后台清理任务
 func gcMarkTermination(nextTriggerRatio float64) {
 	// World is stopped.
 	// Start marktermination which includes enabling the write barrier.
@@ -1600,7 +1607,7 @@ func gcMarkTermination(nextTriggerRatio float64) {
 	// so events don't leak into the wrong cycle.
 	mProf_NextCycle()
 
-	systemstack(startTheWorldWithSema) // 清扫结束了，世界又开启了
+	systemstack(startTheWorldWithSema) // sweep结束了，世界又开启了
 
 	// Flush the heap profile so we can start a new cycle next GC.
 	// This is relatively expensive, so we don't do it with the
@@ -1730,7 +1737,7 @@ func gcBgMarkWorker(_p_ *p) {
 	// gcController.findRunnable at the appropriate time.
 	notewakeup(&work.bgMarkReady) // 通知gcBgMarkStartWorkers继续处理下一个P
 
-	for {
+	for { // 休眠任务，等待调度唤醒
 		// Go to sleep until woken by gcController.findRunnable.
 		// We can't releasem yet since even the call to gopark
 		// may be preempted.
@@ -1790,6 +1797,7 @@ func gcBgMarkWorker(_p_ *p) {
 			throw("work.nwait was > work.nproc")
 		}
 
+		// 分三种模式的标记
 		systemstack(func() {
 			// Mark our goroutine preemptible so its stack
 			// can be scanned. This lets two mark workers
@@ -1799,11 +1807,11 @@ func gcBgMarkWorker(_p_ *p) {
 			// disabled for mark workers, so it is safe to
 			// read from the G stack.
 			casgstatus(gp, _Grunning, _Gwaiting)
-			switch _p_.gcMarkWorkerMode { // TODO 3个后台标记模式具体实现是什么？有什么不同
+			switch _p_.gcMarkWorkerMode {
 			default:
 				throw("gcBgMarkWorker: unexpected gcMarkWorkerMode")
 			case gcMarkWorkerDedicatedMode: // 专注参与标记模式
-				gcDrain(&_p_.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit)
+				gcDrain(&_p_.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit) // 先以允许被抢占的方式进行标记
 				if gp.preempt {
 					// We were preempted. This is
 					// a useful signal to kick
@@ -1822,9 +1830,9 @@ func gcBgMarkWorker(_p_ *p) {
 				}
 				// Go back to draining, this time
 				// without preemption.
-				gcDrain(&_p_.gcw, gcDrainNoBlock|gcDrainFlushBgCredit)
+				gcDrain(&_p_.gcw, gcDrainNoBlock|gcDrainFlushBgCredit) // 然后进入到不允许被抢占的方式进行标记
 			case gcMarkWorkerFractionalMode: // 少量参与标记模式
-				gcDrain(&_p_.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit)
+				gcDrain(&_p_.gcw, gcDrainUntilPreempt|gcDrainFlushBgCredit) // 允许被抢占的方式进行标记
 			case gcMarkWorkerIdleMode: // 空闲时参与标记模式
 				gcDrain(&_p_.gcw, gcDrainIdle|gcDrainUntilPreempt|gcDrainFlushBgCredit)
 			}

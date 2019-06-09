@@ -395,10 +395,10 @@ func mallocinit() {
 	}
 
 	// Initialize the rest of the allocator.
-	// 初始化mheap堆内存
+	// 初始化span区域
 	mheap_.init(spansStart, spansSize) // 依据spans区域初始化mheap大小
 	_g_ := getg()
-	_g_.m.mcache = allocmcache() // 给主G所在M(即M0)分配自己的内存cache
+	_g_.m.mcache = allocmcache() // 给G0所在M(即M0)分配自己的内存cache
 }
 
 // sysAlloc allocates the next n bytes from the heap arena. The
@@ -538,10 +538,10 @@ func nextFreeFast(s *mspan) gclinkptr {
 		result := s.freeindex + uintptr(theBit)
 		if result < s.nelems {
 			freeidx := result + 1
-			if freeidx%64 == 0 && freeidx != s.nelems { // 如果是最后一个，特殊处理：告诉上层没有空闲的object
+			if freeidx%64 == 0 && freeidx != s.nelems { // 如果是最后一个，特殊处理：告诉上层没有空闲的object,在span.nextFreeIndex里会分配
 				return 0
 			}
-			s.allocCache >>= uint(theBit + 1) // TODO theBit!=0的case是怎么出现的
+			s.allocCache >>= uint(theBit + 1)
 			s.freeindex = freeidx
 			v := gclinkptr(result*s.elemsize + s.base()) // 计算空闲内存块指针地址
 			s.allocCount++
@@ -650,7 +650,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 	// 拿到当前M的mcache
 	c := gomcache()
 	var x unsafe.Pointer
-	noscan := typ == nil || typ.kind&kindNoPointers != 0
+	noscan := typ == nil || typ.kind&kindNoPointers != 0 // 如果没有指针或者不确认类型,则noscan==1。TODO 什么情况下typ==nil
 	// 小对象, maxSmallSize=32KB
 	// 小对象里面又区分微小对象跟小对象，微小对象 maxTinySize=16B
 	if size <= maxSmallSize {
@@ -690,9 +690,9 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			// 8字节将导致完全没有浪费，但提供更少的组合机会。
 			// 32字节提供了更多的组合机会，但可能导致4倍最坏情况下的浪费。
 			// 无论块大小如何，获胜的最佳案例是8倍。
-			// 从tiny分配器获得的对象不得明确释放。因此，当显式释放对象时，我们确保其大小> = maxTinySize。
-			// SetFinalizer对于可能来自微小分配器的对象有一个特殊情况，它允许为内存块的内部字节设置终结器。
-			// 微分配器的主要目标是小字符串和独立的转义变量。在json基准测试中，分配器将分配数量减少了大约12％，并将堆大小减少了大约20％。
+			// 从tiny分配器获得的对象不得明确释放。因此，当显式释放对象时，我们确保其大小>= maxTinySize。
+			// SetFinalizer对于可能来自微小分配器的对象有一个特殊情况，它允许为内存块的内部字节设置finalizers。
+			// 微分配器的主要目标是小字符串和独立的转义字符。在json压测中，分配器将分配数量减少了大约12％，并将堆大小减少了大约20％。
 			off := c.tinyoffset
 			// Align tiny pointer for required (conservative) alignment.
 			if size&7 == 0 {
@@ -702,7 +702,7 @@ func mallocgc(size uintptr, typ *_type, needzero bool) unsafe.Pointer {
 			} else if size&1 == 0 {
 				off = round(off, 2)
 			}
-			// 如果tiny里面有足够大小，则直接返回
+			// 如果tiny里面有足够大小（maxTinySize==16 bytes），则直接返回
 			if off+size <= maxTinySize && c.tiny != 0 {
 				// The object fits into existing tiny block.
 				x = unsafe.Pointer(c.tiny + off)
@@ -853,7 +853,7 @@ func largeAlloc(size uintptr, needzero bool, noscan bool) *mspan {
 	if size+_PageSize < size {
 		throw("out of memory")
 	}
-	npages := size >> _PageShift // 大块内存以页为单位，因此这里按页大小计算出页数
+	npages := size >> _PageShift // 大对象直接从heap里分配对象，因此计算出page size
 	if size&_PageMask != 0 {
 		npages++
 	}

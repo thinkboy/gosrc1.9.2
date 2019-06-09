@@ -2092,7 +2092,7 @@ stop:
 	// 执行到这里的话说明没有任务事情去做。
 	// 如果正在GC mark阶段，我们可以让它做一些"空闲模式"的GC mark工作，而不是让P没事做。
 	if gcBlackenEnabled != 0 && _p_.gcBgMarkWorker != 0 && gcMarkWorkAvailable(_p_) {
-		_p_.gcMarkWorkerMode = gcMarkWorkerIdleMode
+		_p_.gcMarkWorkerMode = gcMarkWorkerIdleMode // 设置当前P的mark工作模式为空闲工作模式
 		gp := _p_.gcBgMarkWorker.ptr()
 		casgstatus(gp, _Gwaiting, _Grunnable)
 		if trace.enabled {
@@ -2217,6 +2217,7 @@ stop:
 // be doing. This is a fairly lightweight check to be used for
 // background work loops, like idle GC. It checks a subset of the
 // conditions checked by the actual scheduler.
+// 检测当前P里的本地runq或者epoll里是否有工作任务
 func pollWork() bool {
 	if sched.runqsize != 0 {
 		return true
