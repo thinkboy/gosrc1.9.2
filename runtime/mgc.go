@@ -1321,7 +1321,7 @@ func gcStart(mode gcMode, trigger gcTrigger) {
 		// other allocations. The alternative is to blacken
 		// the tiny block on every allocation from it, which
 		// would slow down the tiny allocator.
-		gcMarkTinyAllocs()
+		gcMarkTinyAllocs() // tiny对象标记
 
 		// At this point all Ps have enabled the write
 		// barrier, thus maintaining the no white to

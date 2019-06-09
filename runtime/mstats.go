@@ -39,7 +39,7 @@ type mstats struct {
 	heap_sys      uint64 // mheap里面从系统获取到的虚拟地址空间字节大小（堆内存+栈内存） // virtual address space obtained from system for GC'd heap
 	heap_idle     uint64 // mheap中空闲的字节数，也就是未分配出去的字节数 //bytes in idle spans
 	heap_inuse    uint64 // 当前从mheap里分配出去的字节数，也就是进程正在使用的内存字节数 // bytes in _MSpanInUse spans
-	heap_released uint64 // bytes released to the os
+	heap_released uint64 // 历史返还给系统的内存大小 //bytes released to the os
 	heap_objects  uint64 // 当前从mheap里分配出去的对象数量 //total number of allocated objects
 
 	// TODO(austin): heap_released is both useless and inaccurate

@@ -1164,6 +1164,7 @@ func scavengeTreapNode(t *treapNode, now, limit uint64) uintptr {
 	return sumreleased
 }
 
+// 扫描mspan list计算并返还给系统
 func scavengelist(list *mSpanList, now, limit uint64) uintptr {
 	if list.isEmpty() {
 		return 0
@@ -1203,6 +1204,7 @@ func scavengelist(list *mSpanList, now, limit uint64) uintptr {
 	return sumreleased
 }
 
+// 检查清理mheap里的空闲内存返回给系统
 func (h *mheap) scavenge(k int32, now, limit uint64) {
 	// Disallow malloc or panic while holding the heap lock. We do
 	// this here because this is an non-mallocgc entry-point to
@@ -1212,9 +1214,9 @@ func (h *mheap) scavenge(k int32, now, limit uint64) {
 	lock(&h.lock)
 	var sumreleased uintptr
 	for i := 0; i < len(h.free); i++ {
-		sumreleased += scavengelist(&h.free[i], now, limit)
+		sumreleased += scavengelist(&h.free[i], now, limit) // 检查free链表
 	}
-	sumreleased += scavengetreap(h.freelarge.treap, now, limit)
+	sumreleased += scavengetreap(h.freelarge.treap, now, limit) // 检查freelarge链表
 	unlock(&h.lock)
 	gp.m.mallocing--
 

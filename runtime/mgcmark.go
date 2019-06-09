@@ -1383,6 +1383,7 @@ func gcmarknewobject(obj, size, scanSize uintptr) {
 // gcMarkTinyAllocs greys all active tiny alloc blocks.
 //
 // The world must be stopped.
+// tiny对象标记
 func gcMarkTinyAllocs() {
 	for _, p := range &allp {
 		if p == nil || p.status == _Pdead {

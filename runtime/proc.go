@@ -3968,7 +3968,8 @@ var forcegcperiod int64 = 2 * 60 * 1e9
 // 监控程序，进程启动时就起来了。主要做如下事情：
 // 1. 检查epoll是否有可运行的任务
 // 2. 抢占运行时间过长的任务
-// 3. 强制GC
+// 3. 触发GC
+// 4. 返还mheap里的空闲内存给系统
 //go:nowritebarrierrec
 func sysmon() {
 	// If a heap span goes unused for 5 minutes after a garbage collection,
@@ -4083,7 +4084,7 @@ func sysmon() {
 			unlock(&forcegc.lock)
 		}
 		// scavenge heap once in a while
-		if lastscavenge+scavengelimit/2 < now {
+		if lastscavenge+scavengelimit/2 < now { // 过2分30秒检查清理一下mheap里的空闲内存返回给系统。
 			mheap_.scavenge(int32(nscavenge), uint64(now), uint64(scavengelimit))
 			lastscavenge = now
 			nscavenge++
