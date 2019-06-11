@@ -26,7 +26,7 @@ type mcentral struct {
 	// nmalloc is the cumulative count of objects allocated from
 	// this mcentral, assuming all spans in mcaches are
 	// fully-allocated. Written atomically, read under STW.
-	nmalloc uint64 // 历史分配过的对象数量
+	nmalloc uint64 // 从mcentral分配过的对象历史总和
 }
 
 // Initialize a single central free list.
@@ -136,7 +136,7 @@ havespan:
 	// mcache. If it gets uncached, we'll adjust this.
 	atomic.Xadd64(&c.nmalloc, int64(n))
 	usedBytes := uintptr(s.allocCount) * s.elemsize                       // span上面已被使用的字节数
-	atomic.Xadd64(&memstats.heap_live, int64(spanBytes)-int64(usedBytes)) // 计算并记录未被使用的字节数
+	atomic.Xadd64(&memstats.heap_live, int64(spanBytes)-int64(usedBytes)) // 累积存活的字节大小
 	if trace.enabled {
 		// heap_live changed.
 		traceHeapAlloc()
@@ -169,7 +169,7 @@ func (c *mcentral) uncacheSpan(s *mspan) {
 	}
 
 	cap := int32((s.npages << _PageShift) / s.elemsize) // 计算span的最大object数量
-	n := cap - int32(s.allocCount)                      // 计算未分配出去的object数量
+	n := cap - int32(s.allocCount)                      // 计算分配出去的object数量
 	if n > 0 {
 		c.empty.remove(s)
 		c.nonempty.insert(s)

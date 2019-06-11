@@ -109,11 +109,11 @@ type mheap struct {
 	// compiler can't 8-byte align fields.
 
 	// Malloc stats.
-	largealloc  uint64                  // bytes allocated for large objects
+	largealloc  uint64                  // 从mheap里分配出去的大对象字节数 // bytes allocated for large objects
 	nlargealloc uint64                  // number of large object allocations
-	largefree   uint64                  // bytes freed for large objects (>maxsmallsize)
+	largefree   uint64                  // 历史返还给mheap的大对象字节总和 // bytes freed for large objects (>maxsmallsize)
 	nlargefree  uint64                  // number of frees for large objects (>maxsmallsize)
-	nsmallfree  [_NumSizeClasses]uint64 // number of frees for small objects (<=maxsmallsize)
+	nsmallfree  [_NumSizeClasses]uint64 // 小对象(<=maxsmallsize 32KB)里面返还给mheap或者mcentral的未被使用的object的历史总和 // number of frees for small objects (<=maxsmallsize)
 
 	// range of addresses we might see in the heap
 	bitmap        uintptr // Points to one byte past the end of the bitmap //指向bitmap区域的指针，指向bitmap的尾部
@@ -307,7 +307,7 @@ type mspan struct {
 	sweepgen    uint32
 	divMul      uint16     // for divide by elemsize - divMagic.mul
 	baseMask    uint16     // if non-0, elemsize is a power of 2, & this will get object allocation base
-	allocCount  uint16     // 当前分配的对象数量 //number of allocated objects
+	allocCount  uint16     // 当前已分配的对象数量 //number of allocated objects
 	spanclass   spanClass  // spanClass由8个bit位，前7个bit位表示sizeClass，第8位表示noscan // size class and noscan (uint8)
 	incache     bool       // 被mcache使用标记
 	state       mSpanState // mspaninuse etc

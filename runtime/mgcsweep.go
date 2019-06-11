@@ -345,7 +345,7 @@ func (s *mspan) sweep(preserve bool) bool {
 		atomic.Store(&s.sweepgen, sweepgen) // 标记span为“清扫过”状态
 	}
 
-	if nfreed > 0 && spc.sizeclass() != 0 {
+	if nfreed > 0 && spc.sizeclass() != 0 { // 如果是小对象
 		c.local_nsmallfree[spc.sizeclass()] += uintptr(nfreed)             // 累计释放的object的数量
 		res = mheap_.central[spc].mcentral.freeSpan(s, preserve, wasempty) // 释放span给mcentral或者mheap
 		// MCentral_FreeSpan updates sweepgen

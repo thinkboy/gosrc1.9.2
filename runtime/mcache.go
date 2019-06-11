@@ -42,7 +42,7 @@ type mcache struct {
 	local_nlookup    uintptr                  // number of pointer lookups
 	local_largefree  uintptr                  // bytes freed for large objects (>maxsmallsize)
 	local_nlargefree uintptr                  // number of frees for large objects (>maxsmallsize)
-	local_nsmallfree [_NumSizeClasses]uintptr // 小对象(<=maxsmallsize 32KB)里面释放的object的数量 // number of frees for small objects (<=maxsmallsize)
+	local_nsmallfree [_NumSizeClasses]uintptr // 小对象(<=maxsmallsize 32KB)里面返还给mheap或者mcentral的未被使用的object的历史总和，但是当pprof获取堆信息的时候会被清0 // number of frees for small objects (<=maxsmallsize)
 }
 
 // A gclink is a node in a linked list of blocks, like mlink,
@@ -85,7 +85,7 @@ func allocmcache() *mcache {
 	return c
 }
 
-// 返还mache的spann给mcentral
+// 返还mache的span给mcentral
 func freemcache(c *mcache) {
 	systemstack(func() {
 		c.releaseAll()
